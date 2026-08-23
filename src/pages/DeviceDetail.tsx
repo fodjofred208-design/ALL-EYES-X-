@@ -1,0 +1,280 @@
+import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import DeviceIcon from '../components/DeviceIcon';
+
+interface DetailData {
+  device: Record<string, unknown>;
+  operating_system: Record<string, unknown>;
+  hardware: Record<string, unknown>;
+  processor: Record<string, unknown>;
+  memory: Record<string, unknown>;
+  graphics: Array<Record<string, unknown>>;
+  storage: Array<Record<string, unknown>>;
+  network_interfaces: Array<Record<string, unknown>>;
+  peripherals: Array<Record<string, unknown>>;
+  preferences: Record<string, string>;
+}
+
+const DeviceDetail: React.FC = () => {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [data, setData] = useState<DetailData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!id) {
+      setError('No device ID');
+      setLoading(false);
+      return;
+    }
+
+    const origin = window.location.origin;
+    fetch(`${origin}/api/device/${id}/detail`, { credentials: 'include' })
+      .then(r => {
+        if (!r.ok) throw new Error(r.status === 404 ? 'Device not found' : `HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(j => { setData(j); setLoading(false); })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin w-8 h-8 border-2 border-green-400 border-t-transparent rounded-full" />
+        <span className="ml-3 text-sm text-slate-400">Loading device details...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="text-center py-16">
+        <div className="w-14 h-14 mx-auto mb-4 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+        </div>
+        <h2 className="text-lg font-semibold text-white mb-1">Failed to load device</h2>
+        <p className="text-sm text-slate-500 mb-4">{error}</p>
+        <button
+          onClick={() => navigate('/devices')}
+          className="px-4 py-2 text-sm text-green-400 bg-green-400/10 rounded-lg hover:bg-green-400/20 transition-colors"
+        >
+          Back to Devices
+        </button>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const { device, operating_system, processor, memory, graphics, storage, network_interfaces, peripherals } = data;
+  const isOnline = device?.status === 'online';
+
+  const Field: React.FC<{ label: string; value: string | number | null | undefined; mono?: boolean }> = ({ label, value, mono }) => (
+    <div className="flex justify-between items-start gap-2 py-1.5 border-b border-slate-700/10 last:border-0">
+      <span className="text-xs text-slate-600 font-medium uppercase tracking-wider">{label}</span>
+      <span className={`text-sm text-slate-200 text-right max-w-[60%] truncate ${mono ? 'font-mono' : ''}`}>
+        {value != null && value !== '' ? String(value) : <span className="text-slate-700 italic">N/A</span>}
+      </span>
+    </div>
+  );
+
+  const Card: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, ease: 'easeOut' }}
+      className="rounded-xl border border-green-500/10 bg-slate-800/30 backdrop-blur-sm overflow-hidden"
+    >
+      <div className="px-5 py-3 border-b border-green-500/10">
+        <h3 className="text-xs font-bold text-green-400 uppercase tracking-wider">{title}</h3>
+      </div>
+      <div className="p-5">{children}</div>
+    </motion.div>
+  );
+
+  const relativeTime = (isoStr: string) => {
+    if (!isoStr) return 'Never';
+    try {
+      const diff = Date.now() - new Date(isoStr).getTime();
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'Just now';
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h ago`;
+      return `${Math.floor(hrs / 24)}d ago`;
+    } catch { return isoStr; }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center gap-4">
+        <button
+          onClick={() => navigate('/devices')}
+          className="p-2 rounded-lg text-slate-500 hover:text-green-400 hover:bg-green-400/10 transition-colors"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M19 12H5M12 19l-7-7 7-7" />
+          </svg>
+        </button>
+        <div className="flex items-center gap-3">
+          <div className={`${isOnline ? 'text-green-400' : 'text-slate-600'}`}>
+            <DeviceIcon hostname={String(device?.hostname || '')} os={String(operating_system?.os_name || '')} size={36} />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-white">{String(device?.hostname || 'Unknown')}</h1>
+            <p className="text-xs text-slate-500 font-mono">{id}</p>
+          </div>
+        </div>
+        <span className={`ml-auto inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full ${
+          isOnline ? 'text-green-300 bg-green-400/10 border border-green-400/20' : 'text-slate-500 bg-slate-500/10 border border-slate-500/20'
+        }`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-green-400' : 'bg-slate-500'}`} />
+          {isOnline ? 'Online' : 'Offline'}
+        </span>
+      </div>
+
+      {/* Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+
+        {/* Identity */}
+        <Card title="Device">
+          <Field label="Hostname" value={String(device?.hostname || '')} />
+          <Field label="IP" value={String(device?.ip || '')} mono />
+          <Field label="MAC" value={String(device?.mac || '')} mono />
+          <Field label="Public IP" value={String(device?.public_ip || '')} mono />
+          <Field label="Location" value={device?.city && device?.country ? `${device.city}, ${device.country}` : null} />
+          <Field label="Last Seen" value={relativeTime(String(device?.last_seen || ''))} />
+          <Field label="Status" value={isOnline ? 'Online' : 'Offline'} />
+        </Card>
+
+        {/* OS */}
+        <Card title="Operating System">
+          <Field label="OS" value={String(operating_system?.os_name || device?.os || '')} />
+          <Field label="Version" value={String(operating_system?.version || device?.os_version || '')} />
+          <Field label="Edition" value={String(operating_system?.edition || '')} />
+          <Field label="Architecture" value={String(operating_system?.architecture || device?.architecture || '')} />
+          <Field label="Kernel" value={String(operating_system?.kernel_version || '')} />
+          <Field label="Build" value={String(operating_system?.build_number || '')} />
+        </Card>
+
+        {/* Processor */}
+        <Card title="Processor">
+          <Field label="Brand" value={String(processor?.brand || '')} />
+          <Field label="Model" value={String(processor?.model || device?.cpu || '')} />
+          <Field label="Cores" value={processor?.core_count != null ? Number(processor.core_count) : null} />
+          <Field label="Threads" value={processor?.logical_threads != null ? Number(processor.logical_threads) : null} />
+          <Field label="Clock Speed" value={String(processor?.clock_speed || '')} />
+          <Field label="Usage" value={processor?.usage_percent != null ? `${Math.round(Number(processor.usage_percent))}%` : null} />
+        </Card>
+
+        {/* Memory */}
+        <Card title="Memory">
+          <Field label="Total" value={memory?.total_gb != null ? `${Number(memory.total_gb).toFixed(1)} GB` : null} />
+          <Field label="Available" value={memory?.available_gb != null ? `${Number(memory.available_gb).toFixed(1)} GB` : null} />
+          <Field label="Speed" value={String(memory?.speed || '')} />
+          <Field label="Type" value={String(memory?.memory_type || '')} />
+          <Field label="Slots Used" value={memory?.slots_used != null ? Number(memory.slots_used) : null} />
+          <Field label="Usage" value={memory?.usage_percent != null ? `${Math.round(Number(memory.usage_percent))}%` : null} />
+        </Card>
+
+        {/* GPU */}
+        <Card title="Graphics">
+          {!graphics || graphics.length === 0 ? (
+            <p className="text-xs text-slate-600 italic">No GPU data reported</p>
+          ) : (
+            graphics.map((gpu, i) => (
+              <div key={i} className={i > 0 ? 'mt-3 pt-3 border-t border-slate-700/20' : ''}>
+                <p className="text-sm font-medium text-white mb-1">{String(gpu.name || '')}</p>
+                <Field label="Manufacturer" value={String(gpu.manufacturer || '')} />
+                <Field label="VRAM" value={String(gpu.dedicated_memory || '')} />
+                <Field label="Driver" value={String(gpu.driver_version || '')} />
+              </div>
+            ))
+          )}
+        </Card>
+
+        {/* Hardware */}
+        <Card title="Hardware">
+          <Field label="Manufacturer" value={String(data.hardware?.manufacturer || '')} />
+          <Field label="Model" value={String(data.hardware?.model || '')} />
+          <Field label="Motherboard" value={String(data.hardware?.motherboard || '')} />
+          <Field label="BIOS" value={String(data.hardware?.bios_version || '')} />
+          <Field label="Serial" value={String(data.hardware?.serial_number || '')} />
+        </Card>
+
+      </div>
+
+      {/* Storage — full width */}
+      <Card title="Storage">
+        {!storage || storage.length === 0 ? (
+          <p className="text-xs text-slate-600 italic">No storage data reported</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {storage.map((disk, i) => (
+              <div key={i} className="p-3 rounded-lg bg-slate-900/40 border border-slate-700/20">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-medium px-2 py-0.5 rounded text-green-300 bg-green-400/10">
+                    {String(disk.drive_type || 'HDD')}
+                  </span>
+                  <span className="text-sm font-medium text-white truncate">{String(disk.name || '')}</span>
+                </div>
+                <Field label="Capacity" value={String(disk.capacity || '')} />
+                <Field label="Used" value={String(disk.used || '')} />
+                <Field label="Free" value={String(disk.free || '')} />
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Network — full width */}
+      <Card title="Network Interfaces">
+        {!network_interfaces || network_interfaces.length === 0 ? (
+          <p className="text-xs text-slate-600 italic">No network data reported</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {network_interfaces.map((net, i) => (
+              <div key={i} className="p-3 rounded-lg bg-slate-900/40 border border-slate-700/20">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`w-2 h-2 rounded-full ${net.status === 'up' ? 'bg-green-400' : 'bg-slate-600'}`} />
+                  <span className="text-sm font-medium text-white">{String(net.name || '')}</span>
+                </div>
+                <Field label="IPv4" value={String(net.ipv4 || '')} mono />
+                <Field label="MAC" value={String(net.mac || '')} mono />
+                <Field label="Speed" value={String(net.speed || '')} />
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Peripherals — full width */}
+      <Card title="Peripherals">
+        {!peripherals || peripherals.length === 0 ? (
+          <p className="text-xs text-slate-600 italic">No peripheral data reported</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {peripherals.map((peri, i) => (
+              <div key={i} className="p-3 rounded-lg bg-slate-900/40 border border-slate-700/20 flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-white truncate">{String(peri.name || '')}</p>
+                  <p className="text-xs text-slate-500">{String(peri.manufacturer || '')}</p>
+                </div>
+                <span className="text-[10px] uppercase text-slate-600">{String(peri.connection_type || 'USB')}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+    </div>
+  );
+};
+
+export default DeviceDetail;
