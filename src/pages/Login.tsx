@@ -49,7 +49,7 @@ const Login: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
     setError('');
 
     try {
-      const result = await apiFetch<{ success: boolean; locked?: boolean; attempts?: number; threshold?: number; message?: string; error?: string }>('/login', {
+      const result = await apiFetch<{ success: boolean; locked?: boolean; attempts?: number; threshold?: number; message?: string; error?: string }>('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({ username, password }),
       });

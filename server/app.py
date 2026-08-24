@@ -767,6 +767,7 @@ def login_required(f):
 # ============================================================
 # ROUTES: AUTHENTICATION
 # ============================================================
+@app.route('/api/auth/login', methods=['POST'])
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
