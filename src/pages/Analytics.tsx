@@ -51,13 +51,13 @@ const Analytics = () => {
     return () => { socket.off('devices_updated', fetchAnalytics); };
   }, [socket, fetchAnalytics]);
 
-  // Build chart data from real analytics
+  // Build chart data from real analytics only. Unknown metrics stay at 0 instead of being simulated.
   const hardwareUsage = analyticsData?.timeline
-    ? analyticsData.timeline.labels.map((label: string, i: number) => ({
+    ? analyticsData.timeline.labels.map((label: string) => ({
         name: label,
-        cpu: Math.round(Math.random() * 30 + 10 + (analyticsData.timeline.values[i] || 0) * 5),
-        ram: Math.round(Math.random() * 20 + 30 + (analyticsData.timeline.values[i] || 0) * 3),
-        disk: Math.round(Math.random() * 10 + 10 + (analyticsData.timeline.values[i] || 0) * 2),
+        cpu: 0,
+        ram: 0,
+        disk: 0,
       }))
     : [];
 

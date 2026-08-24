@@ -72,13 +72,16 @@ const Security = () => {
     }, 3000);
   };
 
-  // Build chart data from real devices
+  // Build chart data from reported device alerts only. No simulated threat counts.
   const securityChartData = devices.length > 0
-    ? devices.map((d, i) => ({
-        time: d.hostname.slice(0, 8),
-        threats: Math.round(Math.random() * 20 + d.alerts?.length || 0),
-        blocked: Math.round(Math.random() * 20 + (d.alerts?.length || 0) * 0.8),
-      }))
+    ? devices.map((d) => {
+        const alertCount = Array.isArray(d.alerts) ? d.alerts.length : 0;
+        return {
+          time: d.hostname.slice(0, 8),
+          threats: alertCount,
+          blocked: 0,
+        };
+      })
     : [{ time: '00:00', threats: 0, blocked: 0 }];
 
   return (

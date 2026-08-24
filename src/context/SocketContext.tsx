@@ -21,12 +21,13 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [isConnected, setIsConnected] = React.useState(false);
 
  useEffect(() => {
-  const socket = io("/", {
+  const socket = io(SOCKET_URL || '/', {
     transports: ['websocket', 'polling'],
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
+    withCredentials: true,
   });
 
   socket.on('connect', () => {
@@ -48,6 +49,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   return () => {
     socket.removeAllListeners();
+    socket.disconnect();
   };
 
 }, []);

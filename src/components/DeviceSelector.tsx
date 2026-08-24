@@ -52,7 +52,7 @@ const DeviceSelector = () => {
                       className={`w-full p-3 flex items-center gap-3 hover:bg-green-500/10 transition-all text-left border-b border-white/5 last:border-0 ${selectedDevice?.id === device.id ? 'bg-green-500/5' : ''}`}
                     >
                        <div className={`p-1.5 rounded-lg ${device.status === 'online' ? 'bg-green-500/10 text-green-500' : 'bg-slate-500/10 text-slate-500'}`}>
-                          {device.os.includes('Android') ? <Smartphone size={14} /> : <Cpu size={14} />}
+                          {(device.os || device.os_name || '').includes('Android') ? <Smartphone size={14} /> : <Cpu size={14} />}
                        </div>
                        <div>
                           <p className="text-xs font-bold text-white">{device.hostname}</p>

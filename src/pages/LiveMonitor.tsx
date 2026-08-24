@@ -198,7 +198,13 @@ const LiveMonitor = () => {
   useEffect(() => {
     if (isLive && selectedDevice) {
       pollFrame();
-      pollingRef.current = setInterval(pollFrame, 80); // ~12 FPS polling fallback
+      const adaptiveMs = {
+        excellent: 16, // up to ~60 FPS on high-performance connections
+        good: 20,
+        average: 25,  // ~40 FPS
+        poor: 33,     // low-performance target: ~30 FPS
+      }[connectionQuality];
+      pollingRef.current = setInterval(pollFrame, adaptiveMs);
     }
 
     return () => {
@@ -207,7 +213,7 @@ const LiveMonitor = () => {
         pollingRef.current = null;
       }
     };
-  }, [isLive, selectedDevice, pollFrame]);
+  }, [isLive, selectedDevice, pollFrame, connectionQuality]);
 
   const toggleLive = () => {
     if (!selectedDevice) return;
@@ -239,7 +245,7 @@ const LiveMonitor = () => {
             Live <span className="text-green-500">Surveillance</span>
           </h1>
           <p className="text-slate-400 font-rajdhani text-xs tracking-widest mt-1 uppercase">
-            AnyDesk-Style Neural Streaming — Dirty Rectangle Diff Engine
+            ALL EYES X Adaptive Neural Streaming — Change-Aware Frame Engine
           </p>
         </div>
         

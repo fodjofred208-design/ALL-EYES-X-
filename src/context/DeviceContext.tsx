@@ -6,6 +6,8 @@ import React, {
   useCallback,
   useRef,
 } from 'react';
+import { apiFetch } from '../utils/api';
+import { normalizeDevices } from '../utils/normalize';
 
 interface Device {
   id: string;
@@ -28,6 +30,8 @@ interface Device {
   connected: number;
   sessions: number;
   data_usage: string;
+  alerts?: unknown[];
+  [key: string]: unknown;
 }
 
 interface DeviceContextType {
@@ -87,26 +91,37 @@ export const DeviceProvider: React.FC<{
 
   const fetchDevices = useCallback(async () => {
     try {
-      const origin = window.location.origin;
+      const json = await apiFetch<any>('/api/devices');
 
-      const res = await fetch(`${origin}/api/devices`, {
-        credentials: 'include',
-      });
+      const rawList = Array.isArray(json)
+        ? json
+        : Array.isArray(json.devices)
+          ? json.devices
+          : Array.isArray(json.devices?.list)
+            ? json.devices.list
+            : Array.isArray(json.list)
+              ? json.list
+              : [];
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
+      const list = normalizeDevices(rawList).map((d: any) => ({
+        ...d,
+        os_name: d.os_name || d.os || 'Unknown',
+        os_version: d.os_version || '',
+        cpu: d.cpu || 'Unknown',
+        ram: d.ram || 'Unknown',
+        ram_total: Number(d.ram_total || 0),
+        architecture: d.architecture || '',
+        mac: d.mac || '',
+        public_ip: d.public_ip || '',
+        country: d.country || 'Unknown',
+        city: d.city || 'Unknown',
+        registered_at: d.registered_at || '',
+        connected: d.online ? 1 : 0,
+        sessions: Number(d.sessions || 0),
+        data_usage: d.data_usage || '0 MB',
+      })) as Device[];
 
-      const json = await res.json();
-
-      const list = (json.devices || json || []) as Device[];
-
-      setDevices(
-        list.map((d) => ({
-          ...d,
-          os_name: d.os_name || d.os || 'Unknown',
-        }))
-      );
+      setDevices(list);
 
       setError('');
     } catch (err) {

@@ -13,7 +13,7 @@ const LiveStats: React.FC = () => {
   }, []);
 
   const l = data?.live ?? {};
-  const since = lastUpdated ? Math.floor((Date.now() - lastUpdated) / 1000) : 0;
+  const since = lastUpdated ? Math.floor((Date.now() - lastUpdated.getTime()) / 1000) : 0;
   const stats = [
     { label: 'CPU', value: `${Math.round(l.cpu ?? data?.server_health?.cpu ?? 0)}%`, color: '#00d4ff' },
     { label: 'RAM', value: `${Math.round(l.ram ?? data?.server_health?.memory ?? 0)}%`, color: '#8b5cf6' },

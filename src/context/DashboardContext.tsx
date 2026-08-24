@@ -7,9 +7,10 @@ interface DashboardCtx {
   loading: boolean;
   error: string | null;
   refresh: () => void;
+  lastUpdated: Date | null;
 }
 
-const Ctx = createContext<DashboardCtx>({ data: null, loading: true, error: null, refresh: () => {} });
+const Ctx = createContext<DashboardCtx>({ data: null, loading: true, error: null, refresh: () => {}, lastUpdated: null });
 export const useDashboard = () => useContext(Ctx);
 
 const POLL_MS = 5000;
@@ -18,6 +19,7 @@ export const DashboardProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [data, setData] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   /** Maps ANY backend shape (nested or legacy flat keys) to one canonical shape. */
@@ -78,6 +80,7 @@ export const DashboardProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const raw = await res.json();
       if (raw.error) throw new Error(raw.message || raw.error);
       setData(normalize(raw));
+      setLastUpdated(new Date());
       setError(null);
     } catch (e: any) {
       setError(e?.message ?? 'fetch failed');
@@ -94,5 +97,5 @@ export const DashboardProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const refresh = useCallback(() => { setLoading(true); fetchData(); }, [fetchData]);
 
-  return <Ctx.Provider value={{ data, loading, error, refresh }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ data, loading, error, refresh, lastUpdated }}>{children}</Ctx.Provider>;
 };

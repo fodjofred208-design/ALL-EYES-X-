@@ -74,35 +74,39 @@ const P2PShare = () => {
     formData.append('target_device', targetNode);
 
     try {
-      const res = await fetch(`${API_BASE}/api/transfer/upload`, {
-        method: 'POST',
-        body: formData,
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${API_BASE}/api/transfer/upload`);
+        xhr.withCredentials = true;
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            setProgress(Math.round((event.loaded / event.total) * 100));
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            setProgress(100);
+            resolve();
+          } else {
+            reject(new Error(`HTTP ${xhr.status}`));
+          }
+        };
+        xhr.onerror = () => reject(new Error('network error'));
+        xhr.send(formData);
       });
 
-      if (res.ok) {
-        // Simulate progress for UX
-        let p = 0;
-        const interval = setInterval(() => {
-          p += Math.random() * 5;
-          setProgress(Math.min(100, p));
-          if (p >= 100) {
-            clearInterval(interval);
-            setStatusMessage(`✓ ${selectedFile.name} uploaded successfully`);
-            fetchTransfers();
-            setSelectedFile(null);
-            setTimeout(() => {
-              setIsTransferring(false);
-              setProgress(0);
-              setStatusMessage('');
-            }, 2000);
-          }
-        }, 100);
-      } else {
-        setStatusMessage('✗ Upload failed');
+      setStatusMessage(`✓ ${selectedFile.name} uploaded successfully`);
+      await fetchTransfers();
+      setSelectedFile(null);
+      setTimeout(() => {
         setIsTransferring(false);
-      }
-    } catch {
-      setStatusMessage('✗ Upload error');
+        setProgress(0);
+        setStatusMessage('');
+      }, 2000);
+    } catch (err) {
+      setStatusMessage(`✗ Upload failed: ${err instanceof Error ? err.message : 'unknown error'}`);
       setIsTransferring(false);
     }
   }, [selectedFile, targetNode, fetchTransfers]);
@@ -320,7 +324,7 @@ const P2PShare = () => {
                  <h4 className="text-sm font-orbitron text-white tracking-widest uppercase">Stealth Policy</h4>
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed font-rajdhani italic">
-                 "All data injections bypass system file watchers by fragmenting packets across neural sectors."
+                 "Transfers are logged, permission-bound, and should be used only for authorized administration."
               </p>
            </div>
         </div>

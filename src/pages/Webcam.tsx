@@ -79,7 +79,11 @@ const Webcam = () => {
       pollingRef.current = null;
       return;
     }
-    const intervals = { smooth: 80, balanced: 150, quality: 250 };
+    const intervals = {
+      smooth: 16,   // high-performance: up to ~60 FPS
+      balanced: 25, // moderate: ~40 FPS
+      quality: 33,  // low-performance: ~30 FPS with steadier quality
+    };
     const ms = intervals[streamQuality];
     pollFrame();
     pollingRef.current = setInterval(pollFrame, ms);

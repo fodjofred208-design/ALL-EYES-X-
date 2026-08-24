@@ -22,6 +22,8 @@ import json
 import uuid
 import time
 import hashlib
+import hmac
+import logging
 import threading
 import base64
 import subprocess
@@ -40,6 +42,7 @@ from flask import (
 )
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 
 # ============================================================
 # CONFIGURATION
@@ -48,6 +51,22 @@ from flask_cors import CORS
 SECRET_KEY = os.environ.get("SECRET_KEY", "aeyes_x_s3cr3t_k3y_2026")
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "FRED123")
+AUTH_LOCK_THRESHOLD = int(os.environ.get("AUTH_LOCK_THRESHOLD", "5"))
+AUTH_LOCK_WINDOW_MINUTES = int(os.environ.get("AUTH_LOCK_WINDOW_MINUTES", "15"))
+AUTH_RECOVERY_UNLOCK_MINUTES = int(os.environ.get("AUTH_RECOVERY_UNLOCK_MINUTES", "60"))
+# Configurable recovery phrase. Production should set RECOVERY_PHRASE_HASH to a
+# SHA-256 hex digest and avoid relying on the development default.
+RECOVERY_PHRASE_HASH = os.environ.get(
+    "RECOVERY_PHRASE_HASH",
+    hashlib.sha256(os.environ.get("RECOVERY_PHRASE", "KING FFF").encode("utf-8")).hexdigest(),
+)
+
+logging.basicConfig(
+    level=os.environ.get("AEX_LOG_LEVEL", "INFO"),
+    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+)
+logger = logging.getLogger("ALL-EYES-X")
+
 
 def build_devices_payload(rows):
     """Robust device row -> JSON. Accepts any column spelling."""
@@ -341,11 +360,101 @@ def init_db():
             status TEXT DEFAULT '',
             FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS telemetry (
+            device_id TEXT PRIMARY KEY,
+            cpu REAL DEFAULT 0,
+            ram REAL DEFAULT 0,
+            disk REAL DEFAULT 0,
+            net_sent REAL DEFAULT 0,
+            net_recv REAL DEFAULT 0,
+            firewall INTEGER DEFAULT -1,
+            antivirus INTEGER DEFAULT -1,
+            open_ports TEXT DEFAULT '[]',
+            boot_time TEXT DEFAULT '',
+            logged_user TEXT DEFAULT '',
+            gpu TEXT DEFAULT '',
+            wifi TEXT DEFAULT '',
+            battery INTEGER DEFAULT -1,
+            malware_detected INTEGER DEFAULT 0,
+            updated_at TEXT DEFAULT '',
+            FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS traffic_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts REAL DEFAULT 0,
+            device_id TEXT DEFAULT '',
+            download REAL DEFAULT 0,
+            upload REAL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS auth_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT DEFAULT '',
+            success INTEGER DEFAULT 0,
+            ip TEXT DEFAULT '',
+            remote INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'web',
+            timestamp TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_stats (
+            date TEXT PRIMARY KEY,
+            alerts INTEGER DEFAULT 0,
+            bandwidth REAL DEFAULT 0,
+            score REAL DEFAULT 0,
+            avg_cpu REAL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS command_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            command_id TEXT DEFAULT '',
+            device_id TEXT DEFAULT '',
+            command TEXT DEFAULT '',
+            result TEXT DEFAULT '',
+            success INTEGER DEFAULT 0,
+            requested_by TEXT DEFAULT '',
+            queued_at TEXT DEFAULT '',
+            completed_at TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT DEFAULT '',
+            actor TEXT DEFAULT '',
+            device_id TEXT DEFAULT '',
+            action TEXT DEFAULT '',
+            result TEXT DEFAULT '',
+            details TEXT DEFAULT ''
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status);
+        CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen);
+        CREATE INDEX IF NOT EXISTS idx_alerts_device ON alerts(device_id);
+        CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
+        CREATE INDEX IF NOT EXISTS idx_telemetry_device ON telemetry(device_id);
+        CREATE INDEX IF NOT EXISTS idx_telemetry_updated ON telemetry(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_traffic_ts ON traffic_samples(ts);
+        CREATE INDEX IF NOT EXISTS idx_auth_timestamp ON auth_attempts(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_command_results_device ON command_results(device_id);
     """)
-    # Migration: add 'deleted' column to existing databases
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(devices)").fetchall()]
-    if 'deleted' not in cols:
-        conn.execute("ALTER TABLE devices ADD COLUMN deleted INTEGER DEFAULT 0")
+
+    def ensure_column(table, column, definition):
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    # Safe migrations for existing databases.
+    ensure_column('devices', 'deleted', 'INTEGER DEFAULT 0')
+    ensure_column('alerts', 'severity', "TEXT DEFAULT 'info'")
+    ensure_column('alerts', 'title', "TEXT DEFAULT ''")
+    ensure_column('alerts', 'category', "TEXT DEFAULT 'system'")
+    ensure_column('alerts', 'status', "TEXT DEFAULT 'open'")
+    ensure_column('notifications', 'title', "TEXT DEFAULT ''")
+    ensure_column('notifications', 'status', "TEXT DEFAULT 'open'")
+    ensure_column('auth_attempts', 'source', "TEXT DEFAULT 'web'")
     conn.commit()
     conn.close()
     print("[DB] Database initialized at", DB_PATH)
@@ -519,12 +628,124 @@ def set_device_preference(device_id, key, value):
     conn.commit()
     conn.close()
 
+
+def audit_event(actor='', device_id='', action='', result='ok', details=''):
+    try:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, actor, device_id, action, result, details) VALUES (?,?,?,?,?,?)",
+            (datetime.now().isoformat(), actor or 'system', device_id or '', action, result, details[:4000])
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[AUDIT] failed: {e}")
+
+
+def record_auth_attempt(username, success, ip, source='web'):
+    try:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO auth_attempts (username, success, ip, remote, source, timestamp) VALUES (?,?,?,?,?,?)",
+            (username or '', 1 if success else 0, ip or '', 0, source, datetime.now().isoformat())
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[AUTH] record failed: {e}")
+
+
+def count_recent_failed_auth(username='', ip='', minutes=15):
+    since = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+    conn = get_db()
+    row = conn.execute(
+        """
+        SELECT COUNT(*) c FROM auth_attempts
+        WHERE success=0 AND timestamp>=? AND (username=? OR ip=?)
+        """,
+        (since, username or '', ip or '')
+    ).fetchone()
+    conn.close()
+    return int(row['c'] if row else 0)
+
+
+def client_ip():
+    return (request.headers.get('X-Forwarded-For', request.remote_addr or '').split(',')[0].strip())
+
+
+def recovery_phrase_valid(phrase):
+    digest = hashlib.sha256((phrase or '').encode('utf-8')).hexdigest()
+    return hmac.compare_digest(digest, RECOVERY_PHRASE_HASH)
+
+
+def activity(message, **fields):
+    detail = ' '.join(f'{k}={v}' for k, v in fields.items() if v is not None)
+    logger.info("%s%s", message, f" | {detail}" if detail else "")
+
+
+def persist_telemetry(device_id, data):
+    now_iso = datetime.now().isoformat()
+    def bool_int(value):
+        if value is True:
+            return 1
+        if value is False:
+            return 0
+        try:
+            return int(value)
+        except Exception:
+            return -1
+
+    open_ports = data.get('open_ports', [])
+    if not isinstance(open_ports, str):
+        open_ports = json.dumps(open_ports)
+
+    battery_value = data.get('battery')
+    if isinstance(battery_value, dict):
+        battery_value = battery_value.get('percent', -1)
+    try:
+        battery_value = int(battery_value if battery_value is not None else -1)
+    except Exception:
+        battery_value = -1
+
+    conn = get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO telemetry
+        (device_id, cpu, ram, disk, net_sent, net_recv, firewall, antivirus,
+         open_ports, boot_time, logged_user, gpu, wifi, battery, malware_detected, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        device_id,
+        float(data.get('cpu') or 0),
+        float(data.get('ram') or 0),
+        float(data.get('disk') or 0),
+        float(data.get('net_sent') or 0),
+        float(data.get('net_recv') or 0),
+        bool_int(data.get('firewall')),
+        bool_int(data.get('antivirus')),
+        open_ports,
+        str(data.get('boot_time') or ''),
+        str(data.get('logged_user') or ''),
+        str(data.get('gpu') or ''),
+        str(data.get('wifi') or ''),
+        battery_value,
+        1 if data.get('malware_detected') else 0,
+        now_iso,
+    ))
+    conn.execute(
+        "INSERT INTO traffic_samples (ts, device_id, download, upload) VALUES (?,?,?,?)",
+        (time.time(), device_id, float(data.get('net_recv') or 0), float(data.get('net_sent') or 0))
+    )
+    conn.execute("DELETE FROM traffic_samples WHERE id NOT IN (SELECT id FROM traffic_samples ORDER BY id DESC LIMIT 5000)")
+    conn.commit()
+    conn.close()
+
 # ============================================================
 # In-memory cache
 # ============================================================
 connected_devices = load_devices_from_db()
 connected_clients_sid = {}
 pending_tasks_queue = {}
+security_unlock_until = {}  # client_ip -> unix timestamp after successful recovery phrase
 touch_event_queues = defaultdict(list)
 touch_event_counter = 0
 latest_screenshots = {}
@@ -557,18 +778,84 @@ def login():
             username = request.form.get('username', '')
             password = request.form.get('password', '')
 
+        ip = client_ip()
+        locked_attempts = count_recent_failed_auth(username, ip, minutes=AUTH_LOCK_WINDOW_MINUTES)
+        unlocked = security_unlock_until.get(ip, 0) > time.time()
+        if locked_attempts >= AUTH_LOCK_THRESHOLD and not unlocked:
+            record_auth_attempt(username, False, ip)
+            audit_event(username, '', 'login_blocked', 'locked', f'ip={ip}; attempts={locked_attempts}')
+            activity('AUTH LOCKDOWN ACTIVE', username=username, ip=ip, attempts=locked_attempts)
+            if request.is_json:
+                return jsonify({
+                    'success': False,
+                    'locked': True,
+                    'attempts': locked_attempts + 1,
+                    'threshold': AUTH_LOCK_THRESHOLD,
+                    'error': 'Security state active. Enter recovery phrase.'
+                }), 423
+            return render_template('login.html', error='Security state active')
+
         if username == ADMIN_USER and password == ADMIN_PASS:
             session['user'] = username
             session['login_time'] = datetime.now().isoformat()
+            record_auth_attempt(username, True, ip)
+            audit_event(username, '', 'login', 'success', f'ip={ip}')
+            activity('AUTH SUCCESS', username=username, ip=ip)
             if request.is_json:
                 return jsonify({'success': True, 'redirect': url_for('loading')})
             return redirect(url_for('loading'))
 
+        record_auth_attempt(username, False, ip)
+        attempts = count_recent_failed_auth(username, ip, minutes=AUTH_LOCK_WINDOW_MINUTES)
+        audit_event(username, '', 'login', 'failed', f'ip={ip}; attempts={attempts}')
+        activity('AUTH FAILED', username=username, ip=ip, attempts=attempts)
         if request.is_json:
-            return jsonify({'success': False, 'error': 'Invalid credentials'}), 401
+            message = 'Invalid credentials'
+            if attempts >= 3:
+                message = 'Invalid credentials. Repeated failures will trigger security state.'
+            return jsonify({
+                'success': False,
+                'attempts': attempts,
+                'threshold': AUTH_LOCK_THRESHOLD,
+                'locked': attempts >= AUTH_LOCK_THRESHOLD,
+                'error': message
+            }), 401
         return render_template('login.html', error='Invalid credentials')
 
     return render_template('login.html')
+
+
+@app.route('/api/auth/recover', methods=['POST'])
+def api_auth_recover():
+    try:
+        data = request.get_json(force=True)
+        phrase = data.get('phrase', '')
+        ip = client_ip()
+        if recovery_phrase_valid(phrase):
+            security_unlock_until[ip] = time.time() + (AUTH_RECOVERY_UNLOCK_MINUTES * 60)
+            record_auth_attempt('recovery', True, ip, source='recovery')
+            audit_event('recovery', '', 'security_recovery', 'success', f'ip={ip}')
+            activity('SECURITY RECOVERY SUCCESS', ip=ip)
+            return jsonify({'success': True, 'message': 'Security state cleared'}), 200
+        record_auth_attempt('recovery', False, ip, source='recovery')
+        audit_event('recovery', '', 'security_recovery', 'failed', f'ip={ip}')
+        activity('SECURITY RECOVERY FAILED', ip=ip)
+        return jsonify({'success': False, 'error': 'Invalid recovery phrase'}), 401
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+
+@app.route('/api/auth/status', methods=['GET'])
+def api_auth_status():
+    ip = client_ip()
+    attempts = count_recent_failed_auth('', ip, minutes=AUTH_LOCK_WINDOW_MINUTES)
+    return jsonify({
+        'authenticated': 'user' in session,
+        'attempts': attempts,
+        'threshold': AUTH_LOCK_THRESHOLD,
+        'locked': attempts >= AUTH_LOCK_THRESHOLD and security_unlock_until.get(ip, 0) <= time.time(),
+        'unlock_until': security_unlock_until.get(ip, 0),
+    }), 200
 
 
 @app.route('/logout')
@@ -732,6 +1019,7 @@ def api_register():
             
             msg = f'NODE CONNECTED: {hostname} ({os_name}) — IP: {ip} — Location: {city}, {country}'
             add_notification('connection', msg)
+            activity('DEVICE REGISTERED', device_id=device_id[:8], host=hostname, ip=ip, os=os_name)
             print(f"[+] New device registered: {hostname} ({device_id[:8]}...)")
         else:
             connected_devices[device_id].update(device_info)
@@ -767,8 +1055,8 @@ def get_device_list_for_dashboard():
             'id': dev_id,
             'hostname': dev.get('hostname', 'Unknown'),
             'ip': dev.get('ip', '0.0.0.0'),
-            'os': dev.get('os', 'Unknown'),
-            'os_name': dev.get('os', 'Unknown'),
+            'os': dev.get('os') or dev.get('os_name', 'Unknown'),
+            'os_name': dev.get('os_name') or dev.get('os', 'Unknown'),
             'os_version': dev.get('os_version', ''),
             'cpu': dev.get('cpu', 'Unknown'),
             'ram': dev.get('ram', 'Unknown'),
@@ -824,9 +1112,8 @@ def api_dashboard():
                 import sqlite3
                 from pathlib import Path
 
-                # IMPORTANT:
-                # Use the SAME database file used by your application.
-                db_path = Path(r"C:\Users\WINDOWS 10\aeyes_data.db")
+                # Use the same SQLite database file as the running Flask app.
+                db_path = Path(DB_PATH)
 
                 conn = sqlite3.connect(str(db_path))
                 conn.row_factory = sqlite3.Row
@@ -1948,6 +2235,8 @@ def api_heartbeat():
         connected_devices[device_id]['status'] = 'online'
         connected_devices[device_id]['ip'] = data.get('ip', connected_devices[device_id]['ip'])
         save_device_to_db(connected_devices[device_id])
+        persist_telemetry(device_id, data)
+        activity('HEARTBEAT', device_id=device_id[:8], host=connected_devices[device_id].get('hostname'), cpu=data.get('cpu'), ram=data.get('ram'), tasks=len(pending_tasks_queue.get(device_id, [])))
 
         tasks = pending_tasks_queue.get(device_id, [])
         if tasks:
@@ -1968,6 +2257,7 @@ def api_heartbeat():
 # API: COMMANDS
 # ============================================================
 @app.route('/api/command', methods=['POST'])
+@login_required
 def api_send_command():
     try:
         data = request.get_json(force=True)
@@ -1994,6 +2284,15 @@ def api_send_command():
         pending_tasks_queue[device_id].append(task)
 
         hostname = connected_devices[device_id].get('hostname', device_id[:8])
+        actor = session.get('user', 'unknown-admin')
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO command_results (command_id, device_id, command, requested_by, queued_at, success) VALUES (?,?,?,?,?,0)",
+            (command_id, device_id, command, actor, datetime.now().isoformat())
+        )
+        conn.commit()
+        conn.close()
+        audit_event(actor, device_id, 'command_queued', 'queued', command[:1000])
         add_notification('command', f'VECTOR QUEUED for {hostname}: {command[:80]}')
         print(f"[*] Command queued for {device_id[:8]}...: {command[:60]}")
 
@@ -2025,6 +2324,14 @@ def api_command_result():
 
         hostname = connected_devices.get(device_id, {}).get('hostname', device_id[:8])
         status = "SUCCESS" if success else "FAILED"
+        conn = get_db()
+        conn.execute(
+            "UPDATE command_results SET result=?, success=?, completed_at=? WHERE command_id=?",
+            (result_text, 1 if success else 0, datetime.now().isoformat(), command_id)
+        )
+        conn.commit()
+        conn.close()
+        audit_event('agent', device_id, 'command_result', status.lower(), f'{command_id}: {result_text[:1000]}')
         print(f"[{status}] Command {command_id[:8]}... from {hostname}")
 
         add_notification('command', f'VECTOR RESULT from {hostname}: {result_text[:120]}')
@@ -2227,7 +2534,15 @@ def switch_webcam(device_id):
 # ============================================================
 @app.route('/api/devices', methods=['GET'])
 def api_devices():
-    return api_dashboard()
+    devices_list = get_device_list_for_dashboard()
+    online = sum(1 for d in devices_list if str(d.get('status', '')).lower() == 'online')
+    return jsonify({
+        'devices': devices_list,
+        'list': devices_list,
+        'total': len(devices_list),
+        'online': online,
+        'offline': len(devices_list) - online,
+    }), 200
 
 
 @app.route('/api/device/<device_id>', methods=['GET'])
@@ -2514,11 +2829,11 @@ def api_device_hardware_update(device_id):
                 VALUES (?,?,?,?,?,?,?)
             """, (
                 device_id,
-                cpu_data.get('brand', ''),
-                cpu_data.get('model', ''),
-                cpu_data.get('core_count', 0),
-                cpu_data.get('logical_threads', 0),
-                cpu_data.get('clock_speed', ''),
+                cpu_data.get('brand', cpu_data.get('model', '')),
+                cpu_data.get('model', cpu_data.get('name', '')),
+                cpu_data.get('core_count', cpu_data.get('cores', 0)),
+                cpu_data.get('logical_threads', cpu_data.get('threads', 0)),
+                cpu_data.get('clock_speed', cpu_data.get('clock_speed_mhz', '')),
                 cpu_data.get('usage_percent', 0.0),
             ))
         
@@ -2595,6 +2910,8 @@ def api_device_hardware_update(device_id):
         if peri_list:
             conn.execute("DELETE FROM peripherals WHERE device_id=?", (device_id,))
             for peri in peri_list:
+                if isinstance(peri, str):
+                    peri = {'name': peri, 'manufacturer': '', 'connection_type': '', 'status': 'reported'}
                 conn.execute("""
                     INSERT INTO peripherals (device_id, name, manufacturer, connection_type, status)
                     VALUES (?,?,?,?,?)
@@ -2749,6 +3066,16 @@ def api_analytics_data():
 # ============================================================
 # API: ALERTS & NOTIFICATIONS
 # ============================================================
+@app.route('/api/alerts/<int:alert_id>/resolve', methods=['POST'])
+def api_alert_resolve(alert_id):
+    conn = get_db()
+    conn.execute("UPDATE alerts SET status='resolved' WHERE id=?", (alert_id,))
+    conn.commit()
+    conn.close()
+    audit_event(session.get('user', 'system'), '', 'alert_resolved', 'ok', str(alert_id))
+    return jsonify({'success': True, 'id': alert_id}), 200
+
+
 @app.route('/api/alerts/<device_id>', methods=['GET', 'POST'])
 def api_alerts(device_id):
     if request.method == 'GET':
@@ -2773,6 +3100,20 @@ def api_alerts(device_id):
 @app.route('/api/notifications', methods=['GET'])
 def api_get_notifications():
     return jsonify(get_notifications_from_db(50)), 200
+
+
+@app.route('/api/notify', methods=['POST'])
+def api_notify():
+    try:
+        data = request.get_json(force=True)
+        notif_type = data.get('type') or data.get('severity') or 'info'
+        message = data.get('message') or data.get('title') or ''
+        if not message:
+            return jsonify({'error': 'message is required'}), 400
+        add_notification(notif_type, message)
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
 
 
 # ============================================================
@@ -2802,6 +3143,7 @@ def api_geolocation():
 # API: FILE TRANSFER
 # ============================================================
 @app.route('/api/transfer/upload', methods=['POST'])
+@login_required
 def api_upload_file():
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
@@ -2809,7 +3151,7 @@ def api_upload_file():
     file = request.files['file']
     target_device = request.form.get('target_device', 'all')
     transfer_id = str(uuid.uuid4())
-    filename = file.filename
+    filename = secure_filename(file.filename or 'transfer.bin')
     safe_name = f"{transfer_id}_{filename}"
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], safe_name)
     file.save(filepath)
@@ -2833,7 +3175,9 @@ def api_upload_file():
 
 
 @app.route('/api/transfer/download/<transfer_id>/<filename>')
+@login_required
 def api_download_file(transfer_id, filename):
+    filename = secure_filename(filename or 'transfer.bin')
     safe_name = f"{transfer_id}_{filename}"
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], safe_name)
     if os.path.exists(filepath):
@@ -2842,6 +3186,7 @@ def api_download_file(transfer_id, filename):
 
 
 @app.route('/api/transfer/list', methods=['GET'])
+@login_required
 def api_transfer_list():
     files = []
     for f in os.listdir(app.config['UPLOAD_FOLDER']):
