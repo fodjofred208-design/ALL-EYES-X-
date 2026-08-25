@@ -36,11 +36,30 @@ interface SecurityData {
   low_count: number;
 }
 
+interface NmapScan {
+  scan_id: string;
+  device_id: string;
+  hostname?: string;
+  scan_type: string;
+  target: string;
+  status: string;
+  result?: string;
+  error?: string;
+  queued_at?: string;
+  completed_at?: string;
+  parsed?: { open_ports?: Array<{ host: string; port: number; protocol: string; service?: string; product?: string; version?: string }> };
+}
+
 const Security = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [securityData, setSecurityData] = useState<SecurityData | null>(null);
   const { socket, isConnected } = useSocket();
   const { devices } = useDevices();
+  const [nmapDeviceId, setNmapDeviceId] = useState('');
+  const [nmapTarget, setNmapTarget] = useState('');
+  const [nmapScanType, setNmapScanType] = useState('top_ports');
+  const [nmapMessage, setNmapMessage] = useState('');
+  const [nmapScans, setNmapScans] = useState<NmapScan[]>([]);
 
   const fetchSecurity = useCallback(async () => {
     try {
@@ -51,18 +70,35 @@ const Security = () => {
     }
   }, []);
 
+  const fetchNmapScans = useCallback(async () => {
+    try {
+      const data = await apiFetch<{ scans: NmapScan[] }>('/api/security/nmap/scans');
+      setNmapScans(data.scans || []);
+    } catch {
+      // Not authenticated or backend unavailable; keep current panel quiet.
+    }
+  }, []);
+
   useEffect(() => {
     fetchSecurity();
-    const interval = setInterval(fetchSecurity, 10000);
+    fetchNmapScans();
+    const interval = setInterval(() => {
+      fetchSecurity();
+      fetchNmapScans();
+    }, 10000);
     return () => clearInterval(interval);
-  }, [fetchSecurity]);
+  }, [fetchSecurity, fetchNmapScans]);
 
   // Real-time refresh
   useEffect(() => {
     if (!socket) return;
     socket.on('devices_updated', fetchSecurity);
-    return () => { socket.off('devices_updated', fetchSecurity); };
-  }, [socket, fetchSecurity]);
+    socket.on('nmap_scan_update', fetchNmapScans);
+    return () => {
+      socket.off('devices_updated', fetchSecurity);
+      socket.off('nmap_scan_update', fetchNmapScans);
+    };
+  }, [socket, fetchSecurity, fetchNmapScans]);
 
   const startScan = () => {
     setIsScanning(true);
@@ -70,6 +106,29 @@ const Security = () => {
       fetchSecurity();
       setIsScanning(false);
     }, 3000);
+  };
+
+  const startNmapScan = async () => {
+    const deviceId = nmapDeviceId || devices[0]?.id || '';
+    if (!deviceId) {
+      setNmapMessage('Select a device first.');
+      return;
+    }
+    if (!nmapTarget.trim()) {
+      setNmapMessage('Enter a private/Tailscale target, for example 192.168.1.10 or 192.168.1.0/24.');
+      return;
+    }
+    setNmapMessage('Queuing authorized Nmap scan...');
+    try {
+      const data = await apiFetch<{ scan_id: string; status: string }>('/api/security/nmap/scan', {
+        method: 'POST',
+        body: JSON.stringify({ device_id: deviceId, target: nmapTarget.trim(), scan_type: nmapScanType }),
+      });
+      setNmapMessage(`Scan queued: ${data.scan_id.slice(0, 8)} (${data.status})`);
+      fetchNmapScans();
+    } catch (err) {
+      setNmapMessage(err instanceof Error ? err.message : 'Failed to queue Nmap scan');
+    }
   };
 
   // Build chart data from reported device alerts only. No simulated threat counts.
@@ -133,6 +192,74 @@ const Security = () => {
                <ShieldAlert className="text-red-500" />
             </div>
          </div>
+      </div>
+
+      <div className="glass-card p-6 border border-green-500/10">
+        <div className="flex flex-col lg:flex-row lg:items-end gap-4 justify-between">
+          <div className="flex-1">
+            <h3 className="text-lg font-orbitron text-white uppercase tracking-wider">Authorized Nmap Scanner</h3>
+            <p className="text-[11px] text-slate-500 mt-1 font-rajdhani">
+              Scans are queued to a selected agent, limited to private/Tailscale targets, stored in the database, and audited.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 flex-[2]">
+            <select
+              value={nmapDeviceId}
+              onChange={(e) => setNmapDeviceId(e.target.value)}
+              className="bg-black/40 border border-green-500/20 rounded-xl px-3 py-2 text-xs text-green-400 font-orbitron"
+            >
+              <option value="">SELECT AGENT</option>
+              {devices.map(d => <option key={d.id} value={d.id}>{d.hostname}</option>)}
+            </select>
+            <input
+              value={nmapTarget}
+              onChange={(e) => setNmapTarget(e.target.value)}
+              placeholder="192.168.1.10 or 192.168.1.0/24"
+              className="bg-black/40 border border-green-500/20 rounded-xl px-3 py-2 text-xs text-green-400 font-mono-data placeholder-green-900"
+            />
+            <select
+              value={nmapScanType}
+              onChange={(e) => setNmapScanType(e.target.value)}
+              className="bg-black/40 border border-green-500/20 rounded-xl px-3 py-2 text-xs text-green-400 font-orbitron"
+            >
+              <option value="ping">Ping discovery</option>
+              <option value="top_ports">Top ports</option>
+              <option value="service">Service/version</option>
+              <option value="os">OS guess</option>
+              <option value="udp_light">Light UDP</option>
+              <option value="vuln_safe">Safe vuln scripts</option>
+            </select>
+            <button
+              onClick={startNmapScan}
+              className="px-4 py-2 bg-green-600/10 border border-green-500/50 text-green-400 rounded-xl hover:bg-green-600 hover:text-white transition-all font-orbitron text-xs font-bold"
+            >
+              START NMAP
+            </button>
+          </div>
+        </div>
+        {nmapMessage && <p className="mt-3 text-[11px] font-mono-data text-green-400">{nmapMessage}</p>}
+        <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-3">
+          {nmapScans.slice(0, 4).map(scan => (
+            <div key={scan.scan_id} className="p-3 rounded-xl bg-black/30 border border-white/5">
+              <div className="flex justify-between gap-3">
+                <div>
+                  <p className="text-xs font-orbitron text-white uppercase">{scan.scan_type} → {scan.target}</p>
+                  <p className="text-[10px] text-slate-500 font-mono-data">{scan.hostname || scan.device_id} · {scan.scan_id.slice(0, 8)}</p>
+                </div>
+                <span className={`text-[10px] font-orbitron uppercase ${scan.status === 'completed' ? 'text-green-400' : scan.status === 'failed' ? 'text-red-400' : 'text-yellow-400'}`}>{scan.status}</span>
+              </div>
+              {scan.error && <p className="mt-2 text-[10px] text-red-400 font-mono-data">{scan.error}</p>}
+              {scan.parsed?.open_ports?.length ? (
+                <div className="mt-2 text-[10px] text-slate-400 font-mono-data">
+                  Open: {scan.parsed.open_ports.slice(0, 6).map(p => `${p.port}/${p.protocol}${p.service ? ` ${p.service}` : ''}`).join(', ')}
+                </div>
+              ) : (
+                <p className="mt-2 text-[10px] text-slate-600 font-mono-data">No parsed open ports yet.</p>
+              )}
+            </div>
+          ))}
+          {nmapScans.length === 0 && <p className="text-xs text-slate-600 font-rajdhani">No Nmap scans recorded yet.</p>}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

