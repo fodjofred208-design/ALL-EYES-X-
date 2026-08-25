@@ -109,7 +109,7 @@ const Webcam = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           camera: isFrontCamera ? 'front' : 'back',
-          interval: { smooth: 80, balanced: 150, quality: 250 }[streamQuality],
+          interval: { smooth: 16, balanced: 20, quality: 33 }[streamQuality],
         }),
       }).catch(() => {});
       notifySystem('connection', `Webcam started: ${selectedDevice.hostname}`);
@@ -219,9 +219,9 @@ const Webcam = () => {
               value={streamQuality}
               onChange={e => setStreamQuality(e.target.value as any)}
             >
-              <option value="smooth">SMOOTH (10 FPS)</option>
-              <option value="balanced">BALANCED (6 FPS)</option>
-              <option value="quality">QUALITY (4 FPS)</option>
+              <option value="smooth">SMOOTH (60 FPS)</option>
+              <option value="balanced">BALANCED (50 FPS)</option>
+              <option value="quality">LOW LOAD (30 FPS)</option>
             </select>
           )}
 
@@ -292,7 +292,7 @@ const Webcam = () => {
                     <div className="text-center">
                       <RefreshCw size={48} className="text-slate-800 animate-spin mx-auto mb-4" />
                       <p className="text-[10px] font-orbitron text-slate-600 uppercase tracking-widest">Waiting for first frame...</p>
-                      <p className="text-[9px] font-rajdhani text-slate-800 mt-2">Client sending at { {smooth: '80ms', balanced: '150ms', quality: '250ms'}[streamQuality] } intervals</p>
+                      <p className="text-[9px] font-rajdhani text-slate-800 mt-2">Client target interval { {smooth: '16ms / 60 FPS', balanced: '20ms / 50 FPS', quality: '33ms / 30 FPS'}[streamQuality] }</p>
                     </div>
                   ) : !selectedDevice ? (
                     <div className="text-center">
@@ -397,7 +397,7 @@ const Webcam = () => {
                   Transmit → Decode → Display
                 </p>
                 <p className="text-[8px] text-slate-600 mt-2">
-                  Quality: {streamQuality} | Interval: { {smooth: '80ms', balanced: '150ms', quality: '250ms'}[streamQuality] }
+                  Quality: {streamQuality} | Target: { {smooth: '60 FPS', balanced: '50 FPS', quality: '30 FPS'}[streamQuality] }
                 </p>
               </div>
             </div>

@@ -256,7 +256,7 @@ The client supports FPS targets:
 
 ```text
 low       30–40 FPS target
-balanced 40 FPS target
+balanced 50 FPS target
 high      up to 60 FPS target
 ```
 

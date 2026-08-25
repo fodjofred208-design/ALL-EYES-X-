@@ -150,12 +150,12 @@ def get_peripherals_info():
 SERVER_URL = "http://100.104.145.118:5000"
 DEVICE_ID_CACHE = os.path.join(os.path.expanduser('~'), '.alleyesx_device_id')
 HEARTBEAT_INTERVAL = 5
-STREAM_PROFILE = os.environ.get('ALLEYESX_STREAM_PROFILE', 'low').lower()
+STREAM_PROFILE = os.environ.get('ALLEYESX_STREAM_PROFILE', 'balanced').lower()
 STREAM_TARGET_FPS = {
-    'low': 35,       # requested low-performance target range: 30-40 FPS
-    'balanced': 40,
-    'high': 60,      # requested high-performance target: up to 60 FPS
-}.get(STREAM_PROFILE, 35)
+    'low': 35,       # low-performance target range: 30-40 FPS
+    'balanced': 50,  # upgraded default target: 50 FPS
+    'high': 60,      # high-performance target: up to 60 FPS
+}.get(STREAM_PROFILE, 50)
 SCREENSHOT_INTERVAL = float(os.environ.get('ALLEYESX_SCREENSHOT_INTERVAL', str(1.0 / STREAM_TARGET_FPS)))
 WEBCAM_INTERVAL = float(os.environ.get('ALLEYESX_WEBCAM_INTERVAL', str(1.0 / STREAM_TARGET_FPS)))
 TOUCH_POLL_INTERVAL = float(os.environ.get('ALLEYESX_TOUCH_POLL_INTERVAL', '0.05'))

@@ -221,6 +221,7 @@ Remove AnyDesk references. Keep ALL EYES X identity. Support:
 
 - frame rate display;
 - adaptive 30–40 FPS for low performance;
+- 50 FPS balanced/default target where hardware allows;
 - up to 60 FPS for high performance;
 - adaptive compression/change-aware frames;
 - More Feature multi-device monitor panel;
@@ -329,6 +330,7 @@ For Windows 10 Pro modest hardware:
 - adaptive streaming;
 - low/balanced/high profiles;
 - 30–40 FPS for low performance;
+- 50 FPS balanced/default target where hardware allows;
 - up to 60 FPS for high performance;
 - no uncontrolled full-frame streaming;
 - no unlimited database growth;
