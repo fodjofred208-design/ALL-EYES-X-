@@ -2401,6 +2401,26 @@ def api_command_result():
         return jsonify({'error': str(e)}), 400
 
 
+@app.route('/api/command/results', methods=['GET'])
+@login_required
+def api_command_results():
+    limit = min(int(request.args.get('limit', 100)), 500)
+    device_id = request.args.get('device_id', '')
+    conn = get_db()
+    if device_id:
+        rows = conn.execute(
+            "SELECT * FROM command_results WHERE device_id=? ORDER BY id DESC LIMIT ?",
+            (device_id, limit)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM command_results ORDER BY id DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+    conn.close()
+    return jsonify({'results': [dict(r) for r in rows]}), 200
+
+
 # ============================================================
 # TOUCH EVENT QUEUE
 # ============================================================
@@ -3159,6 +3179,27 @@ def api_nmap_scan_detail(scan_id):
     except Exception:
         item['parsed'] = {}
     return jsonify({'scan': item}), 200
+
+
+@app.route('/api/security/timeline', methods=['GET'])
+@login_required
+def api_security_timeline():
+    limit = min(int(request.args.get('limit', 100)), 500)
+    events = []
+    conn = get_db()
+    try:
+        for r in conn.execute("SELECT timestamp, actor, device_id, action, result, details FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall():
+            events.append({**dict(r), 'source': 'audit', 'severity': 'info', 'event_type': r['action']})
+        for r in conn.execute("SELECT timestamp, device_id, severity, title, message, status FROM alerts ORDER BY id DESC LIMIT ?", (limit,)).fetchall():
+            events.append({**dict(r), 'source': 'alert', 'actor': 'system', 'result': r['status'], 'event_type': 'alert'})
+        for r in conn.execute("SELECT queued_at timestamp, requested_by actor, device_id, scan_type, target, status, error FROM security_scans ORDER BY id DESC LIMIT ?", (limit,)).fetchall():
+            d = dict(r)
+            d.update({'source': 'nmap', 'severity': 'info', 'event_type': 'nmap_scan', 'details': f"{d.get('scan_type')} {d.get('target')} {d.get('error') or ''}"})
+            events.append(d)
+    finally:
+        conn.close()
+    events.sort(key=lambda e: str(e.get('timestamp') or ''), reverse=True)
+    return jsonify({'events': events[:limit]}), 200
 
 
 # ============================================================

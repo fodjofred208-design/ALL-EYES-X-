@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Terminal as TerminalIcon, ShieldAlert, Hash, Globe, ChevronRight, Zap } from 'lucide-react';
+import { Terminal as TerminalIcon, ShieldAlert, Hash, Globe, ChevronRight, Zap, Download, Trash2, Layers } from 'lucide-react';
 import { useDevices } from '../context/DeviceContext';
 import { useSocket } from '../context/SocketContext';
 import { apiFetch } from '../utils/api';
@@ -10,6 +10,18 @@ type ManagedCommand = {
   category: 'System' | 'Network' | 'Security' | 'Identity' | 'Storage' | 'Operations';
   description: string;
   critical?: boolean;
+};
+
+type CommandResult = {
+  id?: number;
+  command_id: string;
+  device_id: string;
+  command: string;
+  result: string;
+  success: number;
+  requested_by: string;
+  queued_at: string;
+  completed_at: string;
 };
 
 const COMMAND_CATALOG: ManagedCommand[] = [
@@ -80,11 +92,30 @@ const Terminal = () => {
   ]);
   const [input, setInput] = useState('');
   const [isExecuting, setIsExecuting] = useState(false);
+  const [multiMode, setMultiMode] = useState(false);
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
+  const [commandResults, setCommandResults] = useState<CommandResult[]>([]);
+  const [resultsVisible, setResultsVisible] = useState(true);
   const terminalEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
 
   useEffect(() => { scrollToBottom(); }, [history]);
+
+  const fetchCommandResults = useCallback(async () => {
+    try {
+      const data = await apiFetch<{ results: CommandResult[] }>('/api/command/results?limit=50');
+      setCommandResults(data.results || []);
+    } catch {
+      // Backend may require login or be offline; terminal remains usable.
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchCommandResults();
+    const t = setInterval(fetchCommandResults, 8000);
+    return () => clearInterval(t);
+  }, [fetchCommandResults]);
 
   useEffect(() => {
     if (!socket) return;
@@ -92,13 +123,37 @@ const Terminal = () => {
     const handleCommandResult = (data: { device_id: string; result: string; success: boolean }) => {
       if (selectedDevice && data.device_id === selectedDevice.id) {
         setHistory(prev => [...prev, `[RESULT] ${data.success ? 'SUCCESS' : 'FAILED'}`, data.result, '']);
+        fetchCommandResults();
         setIsExecuting(false);
       }
     };
 
     socket.on('command_completed', handleCommandResult);
     return () => { socket.off('command_completed', handleCommandResult); };
-  }, [socket, selectedDevice]);
+  }, [socket, selectedDevice, fetchCommandResults]);
+
+  const toggleDeviceSelection = (deviceId: string) => {
+    setSelectedDeviceIds(prev => prev.includes(deviceId) ? prev.filter(id => id !== deviceId) : [...prev, deviceId]);
+  };
+
+  const exportResults = () => {
+    const content = commandResults.map(r => [
+      `Device: ${r.device_id}`,
+      `Command: ${r.command}`,
+      `Timestamp: ${r.completed_at || r.queued_at}`,
+      `Status: ${r.success ? 'SUCCESS' : 'FAILED/PENDING'}`,
+      'Result:',
+      r.result || 'No result reported yet.',
+      '---',
+    ].join('\n')).join('\n');
+    const blob = new Blob([content || 'No command results displayed.'], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `all-eyes-x-terminal-results-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const printHelp = (base: string[]) => {
     const lines = [...base, `MANAGED COMMAND CATALOG (${COMMAND_CATALOG.length}):`, ''];
@@ -149,23 +204,28 @@ const Terminal = () => {
       return;
     }
 
-    if (!selectedDevice) {
+    const targetIds = multiMode ? selectedDeviceIds : (selectedDevice ? [selectedDevice.id] : []);
+    if (targetIds.length === 0) {
       setHistory([...newHistory, 'ERROR: No device selected.']);
       return;
     }
 
     setIsExecuting(true);
-    setHistory([...newHistory, 'QUEUING AUTHORIZED COMMAND...']);
+    setHistory([...newHistory, `QUEUING AUTHORIZED COMMAND FOR ${targetIds.length} DEVICE(S)...`]);
 
     try {
-      const result = await apiFetch<{ command_id?: string }>('/api/command', {
-        method: 'POST',
-        body: JSON.stringify({ device_id: selectedDevice.id, command: cmd }),
-      });
+      const queued: string[] = [];
+      for (const deviceId of targetIds) {
+        const result = await apiFetch<{ command_id?: string }>('/api/command', {
+          method: 'POST',
+          body: JSON.stringify({ device_id: deviceId, command: cmd }),
+        });
+        queued.push(`${deviceId.slice(0, 8)}:${(result.command_id || '').slice(0, 8)}`);
+      }
 
       setHistory(prev => {
-        const filtered = prev.filter(l => l !== 'QUEUING AUTHORIZED COMMAND...');
-        return [...filtered, `Command queued. ID: ${(result.command_id || '').slice(0, 8)}...`, 'Waiting for execution result...', '']; 
+        const filtered = prev.filter(l => !l.startsWith('QUEUING AUTHORIZED COMMAND'));
+        return [...filtered, `Command queued on ${targetIds.length} device(s): ${queued.join(', ')}`, 'Waiting for execution result...', '']; 
       });
 
       if (!isConnected) {
@@ -181,7 +241,7 @@ const Terminal = () => {
       });
       setIsExecuting(false);
     }
-  }, [input, history, selectedDevice, devices, isConnected]);
+  }, [input, history, selectedDevice, selectedDeviceIds, multiMode, devices, isConnected]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -207,10 +267,17 @@ const Terminal = () => {
           </h1>
         </div>
         <div className="flex gap-4 items-center">
+           <button
+             onClick={() => setMultiMode(v => !v)}
+             className={`flex items-center gap-2 px-3 py-1 rounded text-[10px] font-orbitron uppercase border ${multiMode ? 'bg-cyan-500/10 border-cyan-400/40 text-cyan-300' : 'bg-black/40 border-green-500/30 text-green-400'}`}
+           >
+             <Layers size={12} /> {multiMode ? 'MULTI' : 'SINGLE'}
+           </button>
            <select
              className="bg-black/40 border border-green-500/30 text-green-400 px-3 py-1 rounded text-xs font-orbitron"
              value={selectedDevice?.id || ''}
              onChange={(e) => setSelectedDeviceId(e.target.value || null)}
+             disabled={multiMode}
            >
              <option value="">SELECT TARGET</option>
              {devices.map(d => <option key={d.id} value={d.id}>{d.hostname}</option>)}
@@ -225,6 +292,26 @@ const Terminal = () => {
            </div>
         </div>
       </div>
+
+      {multiMode && (
+        <div className="glass-card p-3 border-cyan-500/20">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-orbitron text-cyan-300 uppercase tracking-widest">Multi-device execution targets</p>
+            <p className="text-[10px] font-mono-data text-slate-500">{selectedDeviceIds.length} selected</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {devices.map(d => (
+              <button
+                key={d.id}
+                onClick={() => toggleDeviceSelection(d.id)}
+                className={`px-3 py-1.5 rounded-lg border text-[9px] font-orbitron uppercase ${selectedDeviceIds.includes(d.id) ? 'bg-cyan-500/10 border-cyan-400/50 text-cyan-300' : 'bg-white/5 border-white/10 text-slate-500'}`}
+              >
+                {d.hostname} · {d.status}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 glass-card border-green-500/10 flex flex-col overflow-hidden shadow-[inset_0_0_100px_rgba(0,0,0,0.8)]">
         <div className="flex-1 overflow-y-auto p-8 font-mono-data text-sm text-green-400/80 custom-scrollbar bg-black/40">
@@ -262,6 +349,33 @@ const Terminal = () => {
           </div>
         </form>
       </div>
+
+      {resultsVisible && (
+        <div className="glass-card p-4 border-green-500/10 max-h-52 overflow-y-auto custom-scrollbar">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-xs font-orbitron text-white uppercase tracking-widest">Command Result Evidence Panel</h3>
+            <div className="flex gap-2">
+              <button onClick={fetchCommandResults} className="px-3 py-1 text-[9px] font-orbitron text-green-400 border border-green-500/20 rounded">REFRESH</button>
+              <button onClick={exportResults} className="px-3 py-1 text-[9px] font-orbitron text-cyan-300 border border-cyan-500/20 rounded flex items-center gap-1"><Download size={11}/>EXPORT TXT</button>
+              <button onClick={() => { setResultsVisible(false); setCommandResults([]); }} className="px-3 py-1 text-[9px] font-orbitron text-red-300 border border-red-500/20 rounded flex items-center gap-1"><Trash2 size={11}/>CLEAR DISPLAY</button>
+            </div>
+          </div>
+          {commandResults.length === 0 ? (
+            <p className="text-xs text-slate-600">No command results displayed. Clearing this panel does not delete audit evidence.</p>
+          ) : commandResults.slice(0, 8).map(r => (
+            <div key={`${r.command_id}-${r.id}`} className="mb-2 p-2 rounded bg-black/30 border border-white/5">
+              <div className="flex justify-between gap-3 text-[10px] font-mono-data">
+                <span className="text-green-400">{r.device_id.slice(0, 8)} · {r.command}</span>
+                <span className={r.success ? 'text-green-400' : 'text-yellow-400'}>{r.success ? 'SUCCESS' : 'PENDING/FAILED'}</span>
+              </div>
+              <pre className="mt-1 whitespace-pre-wrap text-[10px] text-slate-500 max-h-20 overflow-hidden">{r.result || 'Waiting for result...'}</pre>
+            </div>
+          ))}
+        </div>
+      )}
+      {!resultsVisible && (
+        <button onClick={() => { setResultsVisible(true); fetchCommandResults(); }} className="self-start px-3 py-1 text-[9px] font-orbitron text-green-400 border border-green-500/20 rounded">SHOW RESULT PANEL</button>
+      )}
 
       <div className="flex flex-wrap gap-2">
          {quickCommands.map(q => (

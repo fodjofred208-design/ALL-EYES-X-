@@ -9,7 +9,8 @@ import {
   CheckCircle2, 
   Zap,
   RefreshCw,
-  Search
+  Search,
+  Clock
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import { useSocket } from '../context/SocketContext';
@@ -50,6 +51,19 @@ interface NmapScan {
   parsed?: { open_ports?: Array<{ host: string; port: number; protocol: string; service?: string; product?: string; version?: string }> };
 }
 
+interface TimelineEvent {
+  timestamp?: string;
+  actor?: string;
+  device_id?: string;
+  action?: string;
+  event_type?: string;
+  result?: string;
+  details?: string;
+  message?: string;
+  severity?: string;
+  source?: string;
+}
+
 const Security = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [securityData, setSecurityData] = useState<SecurityData | null>(null);
@@ -60,6 +74,7 @@ const Security = () => {
   const [nmapScanType, setNmapScanType] = useState('top_ports');
   const [nmapMessage, setNmapMessage] = useState('');
   const [nmapScans, setNmapScans] = useState<NmapScan[]>([]);
+  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
 
   const fetchSecurity = useCallback(async () => {
     try {
@@ -79,26 +94,41 @@ const Security = () => {
     }
   }, []);
 
+  const fetchTimeline = useCallback(async () => {
+    try {
+      const data = await apiFetch<{ events: TimelineEvent[] }>('/api/security/timeline?limit=30');
+      setTimeline(data.events || []);
+    } catch {
+      // Timeline remains empty when backend is unavailable.
+    }
+  }, []);
+
   useEffect(() => {
     fetchSecurity();
     fetchNmapScans();
+    fetchTimeline();
     const interval = setInterval(() => {
       fetchSecurity();
       fetchNmapScans();
+      fetchTimeline();
     }, 10000);
     return () => clearInterval(interval);
-  }, [fetchSecurity, fetchNmapScans]);
+  }, [fetchSecurity, fetchNmapScans, fetchTimeline]);
 
   // Real-time refresh
   useEffect(() => {
     if (!socket) return;
     socket.on('devices_updated', fetchSecurity);
     socket.on('nmap_scan_update', fetchNmapScans);
+    socket.on('nmap_scan_update', fetchTimeline);
+    socket.on('new_alert', fetchTimeline);
     return () => {
       socket.off('devices_updated', fetchSecurity);
       socket.off('nmap_scan_update', fetchNmapScans);
+      socket.off('nmap_scan_update', fetchTimeline);
+      socket.off('new_alert', fetchTimeline);
     };
-  }, [socket, fetchSecurity, fetchNmapScans]);
+  }, [socket, fetchSecurity, fetchNmapScans, fetchTimeline]);
 
   const startScan = () => {
     setIsScanning(true);
@@ -259,6 +289,27 @@ const Security = () => {
             </div>
           ))}
           {nmapScans.length === 0 && <p className="text-xs text-slate-600 font-rajdhani">No Nmap scans recorded yet.</p>}
+        </div>
+      </div>
+
+      <div className="glass-card p-6 border border-cyan-500/10">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-orbitron text-white uppercase tracking-wider flex items-center gap-2"><Clock size={18} className="text-cyan-300" /> Security Timeline</h3>
+          <button onClick={fetchTimeline} className="text-[10px] font-orbitron text-cyan-300 border border-cyan-500/20 px-3 py-1 rounded">REFRESH</button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-64 overflow-y-auto custom-scrollbar">
+          {timeline.length === 0 ? (
+            <p className="text-xs text-slate-600">No security timeline events reported yet.</p>
+          ) : timeline.slice(0, 12).map((event, i) => (
+            <div key={`${event.timestamp}-${i}`} className="p-3 rounded-xl bg-black/30 border border-white/5">
+              <div className="flex justify-between gap-3">
+                <p className="text-[10px] font-orbitron text-white uppercase">{event.event_type || event.action || event.source}</p>
+                <span className="text-[9px] text-slate-600 font-mono-data">{event.source}</span>
+              </div>
+              <p className="text-[10px] text-slate-500 mt-1 font-mono-data">{event.timestamp || 'no timestamp'} · {event.actor || 'system'} · {event.device_id || 'global'}</p>
+              <p className="text-[11px] text-slate-400 mt-2 font-rajdhani">{event.details || event.message || event.result || 'Event recorded'}</p>
+            </div>
+          ))}
         </div>
       </div>
 

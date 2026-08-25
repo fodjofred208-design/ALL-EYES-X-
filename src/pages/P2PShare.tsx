@@ -21,16 +21,19 @@ const P2PShare = () => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [targetNode, setTargetNode] = useState('all');
   const [statusMessage, setStatusMessage] = useState('');
+  const [historyHidden, setHistoryHidden] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   // Load existing transfers
   const fetchTransfers = useCallback(async () => {
     try {
+      if (historyHidden) return;
       const data = await apiFetch('/api/transfer/list');
       setTransfers(data.transfers || []);
     } catch {
       // Silent
     }
-  }, []);
+  }, [historyHidden]);
 
   useEffect(() => {
     fetchTransfers();
@@ -60,6 +63,27 @@ const P2PShare = () => {
     if (e.target.files && e.target.files[0]) {
       setSelectedFile(e.target.files[0]);
     }
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+      setStatusMessage(`Loaded ${file.name} by drag and drop`);
+    }
+  };
+
+  const clearHistoryDisplay = () => {
+    setHistoryHidden(true);
+    setTransfers([]);
+    setStatusMessage('Transfer history display cleared. Audit evidence and files were not deleted.');
+  };
+
+  const refreshHistoryDisplay = () => {
+    setHistoryHidden(false);
+    setTimeout(fetchTransfers, 0);
   };
 
   const startTransfer = useCallback(async () => {
@@ -140,7 +164,12 @@ const P2PShare = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Transfer Interface */}
         <div className="lg:col-span-2 space-y-6">
-           <div className="glass-card p-12 border-dashed border-green-500/20 bg-green-500/2 flex flex-col items-center justify-center gap-8 min-h-[400px]">
+           <div
+             onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+             onDragLeave={() => setIsDragOver(false)}
+             onDrop={handleDrop}
+             className={`glass-card p-12 border-dashed flex flex-col items-center justify-center gap-8 min-h-[400px] transition-all ${isDragOver ? 'border-green-400/70 bg-green-500/10' : 'border-green-500/20 bg-green-500/2'}`}
+           >
               <div className="relative">
                  <div className="p-8 rounded-full bg-green-500/10 text-green-500 border border-green-500/30">
                     <Share2 size={56} className={isTransferring ? 'animate-spin-slow' : ''} />
@@ -156,7 +185,7 @@ const P2PShare = () => {
               <div className="text-center max-w-md">
                  <h3 className="text-2xl font-orbitron text-white mb-3 tracking-widest uppercase">Injection Console</h3>
                  <p className="text-slate-500 font-rajdhani text-sm leading-relaxed">
-                    Select a target neural node to initiate a high-velocity data stream.
+                    Select a target neural node or drag and drop a file here to initiate an authorized data stream.
                  </p>
                  {statusMessage && (
                    <p className="text-green-500 text-xs font-mono-data mt-2">{statusMessage}</p>
@@ -242,7 +271,10 @@ const P2PShare = () => {
            <div className="glass-card overflow-hidden">
               <div className="p-5 bg-white/5 border-b border-white/5 flex justify-between items-center">
                  <h4 className="text-xs font-orbitron text-slate-400 uppercase tracking-widest">Injection History</h4>
-                 <button onClick={fetchTransfers} className="text-[10px] font-orbitron text-green-900 hover:text-green-500 transition-colors uppercase">Refresh</button>
+                 <div className="flex gap-3">
+                   <button onClick={refreshHistoryDisplay} className="text-[10px] font-orbitron text-green-900 hover:text-green-500 transition-colors uppercase">Refresh</button>
+                   <button onClick={clearHistoryDisplay} className="text-[10px] font-orbitron text-red-900 hover:text-red-400 transition-colors uppercase">Clear Display</button>
+                 </div>
               </div>
               <div className="divide-y divide-white/5">
                  {transfers.length === 0 ? (
