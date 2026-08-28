@@ -446,6 +446,39 @@ python client\client.py http://YOUR_SERVER_IP:5000
 
 Check firewall and Tailscale connectivity.
 
+### Server console flooded with ConnectionAbortedError [WinError 10053]
+
+```text
+ConnectionAbortedError: [WinError 10053] An established connection was
+aborted by the software in your host machine
+```
+
+This is caused by the client opening a new TCP socket for every poll while the
+server is still writing the response. Two fixes are already built in:
+
+1. `client.py` now reuses one persistent keep-alive connection for all
+   heartbeat / touch / screenshot / webcam requests instead of opening a new
+   socket per request.
+2. `server/app.py` collapses these harmless socket-abort tracebacks into a
+   single line so they no longer hide real activity:
+
+```text
+[NET] client closed connection early - ignored (...) [suppressed tracebacks: 7]
+```
+
+Real errors (ValueError, KeyError, database errors) are still printed in full.
+
+If you still see heavy churn, raise the touch poll interval:
+
+```powershell
+$env:ALLEYESX_TOUCH_POLL_INTERVAL="1.0"
+python client\client.py http://YOUR_SERVER_IP:5000
+```
+
+Default touch polling is now `0.5s` instead of the previous `0.05s` (20
+requests per second per agent), which was the main source of the noise on a
+modest Windows 10 Pro machine.
+
 ### Nmap scan fails
 
 Verify Nmap is installed on the client machine:

@@ -69,6 +69,90 @@ logging.basicConfig(
 logger = logging.getLogger("ALL-EYES-X")
 
 
+# ============================================================
+# QUIET SOCKET-ABORT NOISE
+#
+# Eventlet prints uncaught connection errors (client closed the socket early)
+# straight to stderr as full tracebacks. On Windows these appear as:
+#   ConnectionAbortedError: [WinError 10053] An established connection was
+#   aborted by the software in your host machine
+# They are harmless - the request already completed - but they drown the real
+# activity log. This filter collapses each such traceback into ONE compact line
+# and leaves every other traceback untouched.
+# ============================================================
+_QUIET_ERROR_MARKERS = (
+    "ConnectionAbortedError",
+    "ConnectionResetError",
+    "BrokenPipeError",
+    "WinError 10053",
+    "WinError 10054",
+    "WinError 10061",
+)
+
+
+class _QuietStderr:
+    """Wrap sys.stderr and collapse known-harmless socket-abort tracebacks."""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._block = None
+        self._suppressed = 0
+
+    def write(self, text):
+        if not text:
+            return len(text)
+        for line in text.splitlines(True):
+            stripped = line.strip()
+            if stripped.startswith("Traceback (most recent call last):"):
+                self._flush_block()
+                self._block = [line]
+                continue
+            if self._block is not None:
+                self._block.append(line)
+                if stripped and not line.startswith((" ", "\t")) and not stripped.startswith("File "):
+                    self._flush_block()
+                continue
+            self._stream.write(line)
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+        return len(text)
+
+    def _flush_block(self):
+        if self._block is None:
+            return
+        joined = "".join(self._block)
+        self._block = None
+        if any(marker in joined for marker in _QUIET_ERROR_MARKERS):
+            self._suppressed += 1
+            summary = joined.strip().splitlines()[-1].strip()
+            self._stream.write(
+                f"[NET] client closed connection early - ignored ({summary}) "
+                f"[suppressed tracebacks: {self._suppressed}]\n"
+            )
+            return
+        self._stream.write(joined)
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        try:
+            return self._stream.isatty()
+        except Exception:
+            return False
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+sys.stderr = _QuietStderr(sys.stderr)
+
+
 def build_devices_payload(rows):
     """Robust device row -> JSON. Accepts any column spelling."""
     out = []
