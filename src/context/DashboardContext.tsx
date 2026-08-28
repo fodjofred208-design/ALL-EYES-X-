@@ -8,19 +8,66 @@ interface DashboardCtx {
   error: string | null;
   refresh: () => void;
   lastUpdated: Date | null;
+  scopeDeviceId: string | null;
 }
 
-const Ctx = createContext<DashboardCtx>({ data: null, loading: true, error: null, refresh: () => {}, lastUpdated: null });
+const Ctx = createContext<DashboardCtx>({
+  data: null, loading: true, error: null, refresh: () => {}, lastUpdated: null, scopeDeviceId: null,
+});
 export const useDashboard = () => useContext(Ctx);
 
 const POLL_MS = 5000;
 
-export const DashboardProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+interface ProviderProps {
+  children: React.ReactNode;
+  /** Target Node from the header. null = ALL EYES STAT (whole system). */
+  deviceId?: string | null;
+}
+
+export const DashboardProvider: React.FC<ProviderProps> = ({ children, deviceId = null }) => {
   const [data, setData] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const scopeDeviceId = deviceId || null;
+
+  /**
+   * The backend emits series as [{ t, v }]. Every chart component expects
+   * { labels: [], values: [] }. Normalising here fixes all charts at once
+   * instead of each component guessing a shape.
+   */
+  const toLabelled = (series: any): { labels: string[]; values: number[] } => {
+    const rows = Array.isArray(series) ? series : [];
+    return {
+      labels: rows.map((r: any) => String(r?.t ?? r?.label ?? '')),
+      values: rows.map((r: any) => Number(r?.v ?? r?.value ?? 0) || 0),
+    };
+  };
+
+  const normalizeCharts = useCallback((rawCharts: any) => {
+    const c = rawCharts ?? {};
+    const cpu = toLabelled(c.cpu);
+    const ram = toLabelled(c.ram);
+    const disk = toLabelled(c.disk);
+    const alertsDaily = toLabelled(c.alerts);
+    const securityDaily = toLabelled(c.security);
+    return {
+      ...c,
+      cpu,
+      ram,
+      disk,
+      // Security-score history rendered by ThreatChart.
+      threat: securityDaily.labels.length ? securityDaily : { labels: [], values: [] },
+      // Daily alert counts (totals) — severity split comes from alert_trend.
+      alert_daily: alertsDaily,
+      alert_trend: c.alert_trend ?? { labels: [], critical: [], high: [], medium: [], low: [] },
+      traffic_24h: Array.isArray(c.traffic_24h) ? c.traffic_24h : [],
+      protocols: Array.isArray(c.protocols) ? c.protocols : [],
+      device_growth: c.device_growth ?? { labels: [], values: [] },
+      online_trend: c.online_trend ?? { labels: [], online: [], offline: [] },
+    };
+  }, []);
 
   /** Maps ANY backend shape (nested or legacy flat keys) to one canonical shape. */
   const normalize = useCallback((raw: any): any => {
@@ -65,17 +112,18 @@ export const DashboardProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       live: raw.live ?? {},
       health: raw.health ?? {},
       server_health: raw.server_health ?? {},
-      charts: raw.charts ?? {},
+      charts: normalizeCharts(raw.charts),
       risk_ranking: Array.isArray(raw.risk_ranking) ? raw.risk_ranking : [],
       auth: raw.auth ?? null,
       activity: Array.isArray(raw.activity) ? raw.activity : Array.isArray(raw.timeline) ? raw.timeline : [],
       footer: raw.footer ?? null,
     };
-  }, []);
+  }, [normalizeCharts]);
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/dashboard`);
+      const suffix = scopeDeviceId ? `?device_id=${encodeURIComponent(scopeDeviceId)}` : '';
+      const res = await fetch(`${API_BASE}/api/dashboard${suffix}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const raw = await res.json();
       if (raw.error) throw new Error(raw.message || raw.error);
@@ -87,7 +135,7 @@ export const DashboardProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } finally {
       setLoading(false);
     }
-  }, [normalize]);
+  }, [normalize, scopeDeviceId]);
 
   useEffect(() => {
     fetchData();
@@ -97,5 +145,9 @@ export const DashboardProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const refresh = useCallback(() => { setLoading(true); fetchData(); }, [fetchData]);
 
-  return <Ctx.Provider value={{ data, loading, error, refresh, lastUpdated }}>{children}</Ctx.Provider>;
+  return (
+    <Ctx.Provider value={{ data, loading, error, refresh, lastUpdated, scopeDeviceId }}>
+      {children}
+    </Ctx.Provider>
+  );
 };

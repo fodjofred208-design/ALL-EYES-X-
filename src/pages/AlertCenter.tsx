@@ -37,6 +37,9 @@ const AlertCenter: React.FC = () => {
       `ALL EYES X ALERT REPORT\n` +
       `Severity: ${String(a.severity).toUpperCase()}\n` +
       `Time: ${new Date(Number(a.timestamp || Date.now() / 1000) * 1000).toISOString()}\n` +
+      `Device: ${a.device || 'Entire system'}\n` +
+      `Cause: ${a.cause || 'N/A'}\n` +
+      `Proposed fix: ${a.fix || 'N/A'}\n` +
       `Message: ${a.message || a.title || 'N/A'}`;
     navigator.clipboard?.writeText(text).catch(() => {});
     setCopied(a.id || 'copy');
@@ -107,9 +110,25 @@ const AlertCenter: React.FC = () => {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[9px] font-orbitron uppercase tracking-widest" style={{ color }}>{sev}</span>
+                    <span className="text-[9px] font-orbitron uppercase tracking-widest text-cyan-300/90 border border-cyan-500/20 rounded px-1.5 py-0.5">
+                      {a.device || 'Entire system'}
+                    </span>
                     <span className="text-[8px] font-mono-data text-slate-600">{relativeTime(a.timestamp)}</span>
                   </div>
                   <p className="text-[11px] font-mono-data text-slate-300 mt-1 break-words">{a.message || a.title || 'Alert event'}</p>
+
+                  {a.cause && (
+                    <p className="mt-2 text-[10px] font-rajdhani text-slate-400">
+                      <span className="text-[8px] font-orbitron uppercase tracking-widest text-slate-600 mr-1">Cause</span>
+                      {a.cause}
+                    </p>
+                  )}
+                  {a.fix && (
+                    <p className="mt-1 text-[10px] font-rajdhani text-green-300/80">
+                      <span className="text-[8px] font-orbitron uppercase tracking-widest text-green-700 mr-1">Proposed fix</span>
+                      {a.fix}
+                    </p>
+                  )}
                 </div>
                 <button
                   type="button"

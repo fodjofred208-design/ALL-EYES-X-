@@ -28,10 +28,14 @@ const Typewriter: React.FC<{ text: string; speed?: number; startDelay?: number }
     return () => { clearTimeout(to); if (iv) clearInterval(iv); };
   }, [text, speed, startDelay]);
   return (
-    <p className="text-center font-mono-data text-xs md:text-sm leading-relaxed text-slate-400">
-      {text.slice(0, count)}
-      {count < text.length && <span className="aeyes-caret" style={{ height: '1em' }} />}
-    </p>
+    /* Fixed height + left/top anchoring: as characters are typed the block
+       grows DOWNWARD, so the eye/title above never shift upward. */
+    <div className="aeyes-typewriter">
+      <p className="font-mono-data text-xs md:text-sm leading-relaxed text-slate-400">
+        {text.slice(0, count)}
+        {count < text.length && <span className="aeyes-caret" style={{ height: '1em' }} />}
+      </p>
+    </div>
   );
 };
 
@@ -62,7 +66,7 @@ const WelcomeExperience: React.FC = () => {
         Futuristic Universal Monitoring Software
       </p>
 
-      <div className="we-desc max-w-2xl mt-8">
+      <div className="we-desc max-w-2xl mt-8 w-full flex flex-col items-start">
         <Typewriter text={DESCRIPTION} />
       </div>
 

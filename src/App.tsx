@@ -9,6 +9,7 @@ import ConstellationBackground from './components/ConstellationBackground';
 
 import Dashboard from './pages/Dashboard';
 import { DashboardProvider } from './context/DashboardContext';
+import { useDevices } from './context/DeviceContext';
 import { WelcomeProvider, useWelcome } from './context/WelcomeContext';
 import WelcomeExperience from './components/welcome/WelcomeExperience';
 import NotificationCenter from './components/NotificationCenter';
@@ -133,6 +134,20 @@ const WelcomeGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return <>{children}</>;
 };
 
+/**
+ * Wraps a page in DashboardProvider using the header Target Node.
+ * Without this, pages that call useDashboard() (Alert Center, Critical Chart
+ * Analysis) receive an empty context and render nothing.
+ */
+const Scoped: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { selectedDevice } = useDevices();
+  return (
+    <DashboardProvider deviceId={selectedDevice?.id ?? null}>
+      {children}
+    </DashboardProvider>
+  );
+};
+
 const AppContent: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -176,19 +191,19 @@ const AppContent: React.FC = () => {
 
             
 
+            {/* Dashboard supplies its own DashboardProvider so the header
+                Target Node can scope the payload to one device. */}
             <Route
           path="/"
           element={
-            <DashboardProvider>
               <WelcomeGate>
                 <Dashboard />
               </WelcomeGate>
-            </DashboardProvider>
           }
         />
               <Route path="/analytics" element={<Panel><Analytics /></Panel>} />
-              <Route path="/alerts" element={<Panel><AlertCenter /></Panel>} />
-              <Route path="/chart-analysis" element={<Panel><ChartAnalysis /></Panel>} />
+              <Route path="/alerts" element={<Panel><Scoped><AlertCenter /></Scoped></Panel>} />
+              <Route path="/chart-analysis" element={<Panel><Scoped><ChartAnalysis /></Scoped></Panel>} />
               <Route path="/devices" element={<Panel><Devices /></Panel>} />
               <Route path="/device/:id" element={<Panel><DeviceDetail /></Panel>} />
               <Route path="/live_monitor" element={<Panel><LiveMonitor /></Panel>} />

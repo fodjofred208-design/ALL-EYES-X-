@@ -673,7 +673,7 @@ def save_device_to_db(device_info):
     conn.commit()
     conn.close()
 
-def add_alert_to_db(device_id, alert_type, message):
+def add_alert_to_db(device_id, alert_type, message, notify=True):
     conn = get_db()
     conn.execute(
         "INSERT INTO alerts (device_id, type, message, timestamp) VALUES (?,?,?,?)",
@@ -681,6 +681,13 @@ def add_alert_to_db(device_id, alert_type, message):
     )
     conn.commit()
     conn.close()
+    # Every alert becomes a notification unless the caller already notified
+    # about the same event (avoids duplicate entries in the bell).
+    if notify:
+        try:
+            add_notification('alert', f'ALERT [{str(alert_type).upper()}] {message[:160]}')
+        except Exception:
+            pass
 
 def get_alerts_from_db(device_id):
     conn = get_db()
@@ -817,6 +824,55 @@ def validate_scan_target(target):
     return str(net)
 
 
+# ============================================================
+# ALERT EXPLANATION
+#
+# The Alert Center must show, for every alert: the device name, the alert
+# type, the cause and a proposed fix. Cause/fix come from a deterministic
+# mapping of the recorded event text - never invented telemetry.
+# ============================================================
+_ALERT_RULES = [
+    ('firewall', 'Host firewall is disabled or unresponsive.',
+     'Enable the host firewall and verify the default inbound policy blocks unsolicited traffic.'),
+    ('antivirus', 'Endpoint protection is disabled or not reporting.',
+     'Turn on real-time protection and confirm the AV service is running and updated.'),
+    ('malware', 'Malware indicator reported by the agent.',
+     'Isolate the device from the network, run a full AV scan, and review the flagged path.'),
+    ('keylog', 'Keylogger diagnostic capture is active on this agent.',
+     'Disable ALLEYESX_ENABLE_KEYLOG_DIAGNOSTIC unless an authorized session requires it.'),
+    ('login', 'Authentication activity was recorded against the console.',
+     'Verify the account and source IP; rotate credentials if the attempt was unexpected.'),
+    ('recovery', 'A security-state recovery phrase attempt was made.',
+     'Confirm the operator is authorized; review the audit log entry for source IP.'),
+    ('nmap', 'An authorized port scan was executed against this target.',
+     'Review open ports and close or firewall any service that is not required.'),
+    ('port', 'Open ports were detected on this device.',
+     'Close unused listeners and restrict required ones to trusted source ranges.'),
+    ('offline', 'The agent stopped sending heartbeats.',
+     'Check the device power/network state and confirm client.py is running.'),
+    ('removed', 'The device was removed from the inventory.',
+     'Re-register the agent if the removal was unintended.'),
+    ('command', 'An administrative command was executed or returned an error.',
+     'Review the command output in the Terminal evidence panel before repeating it.'),
+    ('transfer', 'A file transfer was started or completed.',
+     'Confirm the file, target device and checksum with the recipient.'),
+    ('scan', 'A security scan was executed.',
+     'Open the scan result and remediate every high-risk finding.'),
+]
+
+
+def explain_alert(text, category=''):
+    """Return (cause, proposed_fix) for a recorded alert string."""
+    haystack = f'{category} {text}'.lower()
+    for needle, cause, fix in _ALERT_RULES:
+        if needle in haystack:
+            return cause, fix
+    return (
+        'Event recorded by the ALL EYES X monitoring pipeline.',
+        'Inspect the related audit log entry and confirm whether action is required.',
+    )
+
+
 def activity(message, **fields):
     detail = ' '.join(f'{k}={v}' for k, v in fields.items() if v is not None)
     logger.info("%s%s", message, f" | {detail}" if detail else "")
@@ -885,6 +941,9 @@ connected_devices = load_devices_from_db()
 connected_clients_sid = {}
 pending_tasks_queue = {}
 security_unlock_until = {}  # client_ip -> unix timestamp after successful recovery phrase
+_offline_notified = {}      # device_id -> unix ts of last offline notification
+# Do not re-notify the same offline device more than once per this many seconds.
+OFFLINE_NOTIFY_COOLDOWN = int(os.environ.get('OFFLINE_NOTIFY_COOLDOWN', '900'))
 touch_event_queues = defaultdict(list)
 touch_event_counter = 0
 latest_screenshots = {}
@@ -925,6 +984,7 @@ def login():
             record_auth_attempt(username, False, ip)
             audit_event(username, '', 'login_blocked', 'locked', f'ip={ip}; attempts={locked_attempts}')
             activity('AUTH LOCKDOWN ACTIVE', username=username, ip=ip, attempts=locked_attempts)
+            add_notification('security', f'LOCKDOWN: repeated failed logins from {ip} ({locked_attempts} attempts)')
             if request.is_json:
                 return jsonify({
                     'success': False,
@@ -941,6 +1001,7 @@ def login():
             record_auth_attempt(username, True, ip)
             audit_event(username, '', 'login', 'success', f'ip={ip}')
             activity('AUTH SUCCESS', username=username, ip=ip)
+            add_notification('auth', f'LOGIN SUCCESS: {username} from {ip}')
             if request.is_json:
                 return jsonify({'success': True, 'redirect': url_for('loading')})
             return redirect(url_for('loading'))
@@ -949,6 +1010,7 @@ def login():
         attempts = count_recent_failed_auth(username, ip, minutes=AUTH_LOCK_WINDOW_MINUTES)
         audit_event(username, '', 'login', 'failed', f'ip={ip}; attempts={attempts}')
         activity('AUTH FAILED', username=username, ip=ip, attempts=attempts)
+        add_notification('auth', f'LOGIN FAILED: {username} from {ip} (attempt {attempts})')
         if request.is_json:
             message = 'Invalid credentials'
             if attempts >= 3:
@@ -976,10 +1038,12 @@ def api_auth_recover():
             record_auth_attempt('recovery', True, ip, source='recovery')
             audit_event('recovery', '', 'security_recovery', 'success', f'ip={ip}')
             activity('SECURITY RECOVERY SUCCESS', ip=ip)
+            add_notification('security', f'RECOVERY: security state cleared from {ip}')
             return jsonify({'success': True, 'message': 'Security state cleared'}), 200
         record_auth_attempt('recovery', False, ip, source='recovery')
         audit_event('recovery', '', 'security_recovery', 'failed', f'ip={ip}')
         activity('SECURITY RECOVERY FAILED', ip=ip)
+        add_notification('security', f'RECOVERY FAILED: invalid phrase from {ip}')
         return jsonify({'success': False, 'error': 'Invalid recovery phrase'}), 401
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 400
@@ -1232,6 +1296,17 @@ def api_dashboard():
     try:
         server_time = datetime.now().isoformat()
 
+        # ------------------------------------------------------------
+        # SCOPE
+        #
+        # The header "Target Node" selector drives this. With no device_id the
+        # payload describes the whole system (ALL EYES STAT). With a device_id
+        # every telemetry / traffic / chart query is limited to that device.
+        # ------------------------------------------------------------
+        scope_device = (request.args.get('device_id') or '').strip() or None
+        scope_where = 'WHERE device_id = ?' if scope_device else ''
+        scope_args = (scope_device,) if scope_device else ()
+
         # ============================================================
         # 0. DEVICES
         # ============================================================
@@ -1429,6 +1504,15 @@ def api_dashboard():
 
         recent_alerts = []
 
+        # hostname lookup so device-scoped alerts can name their device
+        device_names = {}
+        for _d in devices_list:
+            _did = _d.get('id') or _d.get('device_id')
+            if _did:
+                device_names[_did] = (
+                    _d.get('hostname') or _d.get('name') or _did
+                )
+
         for a in alert_rows:
 
             severity = str(
@@ -1468,7 +1552,26 @@ def api_dashboard():
                     a.get('timestamp')
                     or time.time()
                 ),
+
+                # Alert Center requires: device name, type, cause, proposed fix
+                'device_id': (
+                    a.get('device_id') or scope_device or ''
+                ),
+
+                'device': (
+                    device_names.get(
+                        a.get('device_id') or scope_device or '',
+                        'Entire system',
+                    )
+                ),
             })
+
+            _cause, _fix = explain_alert(
+                recent_alerts[-1]['message'],
+                recent_alerts[-1].get('category', ''),
+            )
+            recent_alerts[-1]['cause'] = _cause
+            recent_alerts[-1]['fix'] = _fix
 
         # ------------------------------------------------------------
         # Alert severity counts
@@ -1541,9 +1644,10 @@ def api_dashboard():
                 download,
                 upload
             FROM traffic_samples
+            {}
             ORDER BY ts DESC
             LIMIT 1
-        """)
+        """.format(scope_where), scope_args)
 
         if traffic_rows:
 
@@ -1584,9 +1688,11 @@ def api_dashboard():
                 download AS download,
                 upload AS upload
             FROM traffic_samples
-            ORDER BY ts ASC
+            {}
+            ORDER BY ts DESC
             LIMIT 30
-        """)
+        """.format(scope_where), scope_args)
+        trend_rows.reverse()
 
         traffic_payload['trend'] = [
 
@@ -1658,6 +1764,26 @@ def api_dashboard():
 
         cpu_series = _series('avg_cpu')
         alert_series = _series('alerts')
+
+        # ------------------------------------------------------------
+        # CPU chart from live telemetry (daily_stats only snapshots daily,
+        # so this gives the chart real short-term resolution).
+        # ------------------------------------------------------------
+        cpu_rows = _q("""
+            SELECT
+                updated_at AS t,
+                cpu AS v
+            FROM telemetry
+            WHERE cpu IS NOT NULL {}
+            ORDER BY updated_at ASC
+            LIMIT 30
+        """.format('AND device_id = ?' if scope_device else ''), scope_args)
+
+        if cpu_rows:
+            cpu_series = [
+                {'t': row.get('t'), 'v': float(row.get('v') or 0)}
+                for row in cpu_rows
+            ]
         traffic_series = _series('bandwidth')
         security_series = _series('score')
 
@@ -1672,10 +1798,10 @@ def api_dashboard():
                 updated_at AS t,
                 ram AS v
             FROM telemetry
-            WHERE ram IS NOT NULL
+            WHERE ram IS NOT NULL {}
             ORDER BY updated_at ASC
             LIMIT 30
-        """)
+        """.format('AND device_id = ?' if scope_device else ''), scope_args)
 
         ram_series = [
 
@@ -1698,10 +1824,10 @@ def api_dashboard():
                 updated_at AS t,
                 disk AS v
             FROM telemetry
-            WHERE disk IS NOT NULL
+            WHERE disk IS NOT NULL {}
             ORDER BY updated_at ASC
             LIMIT 30
-        """)
+        """.format('AND device_id = ?' if scope_device else ''), scope_args)
 
         disk_series = [
 
@@ -1724,7 +1850,59 @@ def api_dashboard():
 
         protocol_rows = []
 
+        # ------------------------------------------------------------
+        # Alert trend by severity, grouped by day. Real counts only -
+        # days with no alerts are simply absent from the series.
+        # ------------------------------------------------------------
+        sev_rows = _q("""
+            SELECT
+                substr(timestamp, 1, 10) AS d,
+                lower(COALESCE(severity, type, 'info')) AS sev,
+                COUNT(*) AS c
+            FROM alerts
+            GROUP BY d, sev
+            ORDER BY d ASC
+            LIMIT 120
+        """)
+
+        alert_trend_map = {}
+        for row in sev_rows:
+            day = row.get('d') or ''
+            bucket = alert_trend_map.setdefault(
+                day, {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+            )
+            sev = (row.get('sev') or 'low').lower()
+            if sev in ('info', 'notice'):
+                sev = 'low'
+            if sev in bucket:
+                bucket[sev] += int(row.get('c') or 0)
+
+        alert_trend_days = sorted(alert_trend_map.keys())
+        alert_trend = {
+            'labels': alert_trend_days,
+            'critical': [alert_trend_map[d]['critical'] for d in alert_trend_days],
+            'high': [alert_trend_map[d]['high'] for d in alert_trend_days],
+            'medium': [alert_trend_map[d]['medium'] for d in alert_trend_days],
+            'low': [alert_trend_map[d]['low'] for d in alert_trend_days],
+        }
+
+        # ------------------------------------------------------------
+        # Raw traffic samples for the traffic chart (ts is a unix float).
+        # ------------------------------------------------------------
+        traffic_24h = [
+            {
+                'ts': row.get('t'),
+                'download': float(row.get('download') or 0),
+                'upload': float(row.get('upload') or 0),
+            }
+            for row in trend_rows
+        ]
+
         charts_payload = {
+
+            'alert_trend': alert_trend,
+
+            'traffic_24h': traffic_24h,
 
             'cpu': cpu_series,
 
@@ -1772,9 +1950,10 @@ def api_dashboard():
                 malware_detected,
                 updated_at
             FROM telemetry
+            {}
             ORDER BY updated_at DESC
             LIMIT 1
-        """)
+        """.format(scope_where), scope_args)
 
         live_payload = {
             'device_id': None,
@@ -1929,6 +2108,29 @@ def api_dashboard():
             'recent': [],
         }
 
+        # Real counters straight from the auth_attempts table.
+        today_prefix = datetime.now().strftime('%Y-%m-%d')
+        _today = _q(
+            "SELECT SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) AS ok, "
+            "SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS bad "
+            "FROM auth_attempts WHERE timestamp LIKE ?",
+            (today_prefix + '%',),
+        )
+        if _today:
+            auth_payload['success_today'] = int(_today[0].get('ok') or 0)
+            auth_payload['failed_today'] = int(_today[0].get('bad') or 0)
+
+        # Brute force = 5+ failures from one source inside the lock window.
+        _bf = _q(
+            "SELECT ip, COUNT(*) AS c FROM auth_attempts "
+            "WHERE success=0 AND timestamp >= ? "
+            "GROUP BY ip HAVING c >= ?",
+            ((datetime.now() - timedelta(minutes=AUTH_LOCK_WINDOW_MINUTES)).isoformat(),
+             AUTH_LOCK_THRESHOLD),
+        )
+        auth_payload['brute_force_attempts'] = len(_bf)
+        auth_payload['brute_force_sources'] = [r.get('ip') for r in _bf]
+
         for row in auth_rows:
 
             success = bool(
@@ -2021,56 +2223,114 @@ def api_dashboard():
 
         # ============================================================
         # 8. SECURITY
+        #
+        # Real, aggregated, explainable score. Every point comes from stored
+        # telemetry / alerts / auth data - nothing is simulated.
+        #
+        # Formula (starts at 100, then):
+        #   -15  any monitored device has firewall disabled
+        #   -15  any monitored device has antivirus disabled
+        #   -35  any device reports malware
+        #   -3 per device offline (max 15)
+        #   -4 per open critical/high alert (max 20)
+        #   -2 per failed login in last 24h (max 10)
         # ============================================================
 
-        security_score = 0
-
-        if telemetry_rows:
-
-            telemetry = telemetry_rows[0]
-
-            firewall = bool(
-                telemetry.get('firewall')
+        if scope_device:
+            all_telemetry = _q(
+                "SELECT device_id, firewall, antivirus, malware_detected FROM telemetry WHERE device_id = ?",
+                (scope_device,),
             )
-
-            antivirus = bool(
-                telemetry.get('antivirus')
-            )
-
-            malware = bool(
-                telemetry.get('malware_detected')
-            )
-
-            security_score = 100
-
-            if not firewall:
-                security_score -= 20
-
-            if not antivirus:
-                security_score -= 20
-
-            if malware:
-                security_score -= 40
-
-            security_score = max(
-                0,
-                min(100, security_score)
-            )
-
-        if security_score >= 90:
-
-            security_grade = 'Excellent'
-
-        elif security_score >= 75:
-
-            security_grade = 'Good'
-
-        elif security_score >= 50:
-
-            security_grade = 'Warning'
-
         else:
+            all_telemetry = _q(
+                "SELECT device_id, firewall, antivirus, malware_detected FROM telemetry"
+            )
 
+        security_factors = []
+        security_score = 100
+
+        if all_telemetry:
+            fw_off = sum(1 for t in all_telemetry if not bool(t.get('firewall')))
+            av_off = sum(1 for t in all_telemetry if not bool(t.get('antivirus')))
+            malware_hits = sum(1 for t in all_telemetry if bool(t.get('malware_detected')))
+
+            if fw_off:
+                security_score -= 15
+                security_factors.append({
+                    'label': f'{fw_off} device(s) with firewall disabled',
+                    'impact': -15,
+                })
+            else:
+                security_factors.append({'label': 'Firewall active on all reporting devices', 'impact': 0})
+
+            if av_off:
+                security_score -= 15
+                security_factors.append({
+                    'label': f'{av_off} device(s) with antivirus disabled',
+                    'impact': -15,
+                })
+            else:
+                security_factors.append({'label': 'Antivirus active on all reporting devices', 'impact': 0})
+
+            if malware_hits:
+                security_score -= 35
+                security_factors.append({
+                    'label': f'{malware_hits} device(s) report malware indicators',
+                    'impact': -35,
+                })
+            else:
+                security_factors.append({'label': 'No malware indicators reported', 'impact': 0})
+        else:
+            security_score = None
+            security_factors.append({
+                'label': 'No security telemetry stored yet - waiting for agent heartbeat',
+                'impact': 0,
+            })
+
+        if security_score is not None:
+            if offline:
+                penalty = min(offline * 3, 15)
+                security_score -= penalty
+                security_factors.append({
+                    'label': f'{offline} device(s) offline',
+                    'impact': -penalty,
+                })
+
+            alert_penalty = min(
+                (alert_counts.get('critical', 0) * 2 + alert_counts.get('high', 0)) * 4, 20
+            )
+            if alert_penalty:
+                security_score -= alert_penalty
+                security_factors.append({
+                    'label': f"{alert_counts.get('critical', 0)} critical / {alert_counts.get('high', 0)} high alerts",
+                    'impact': -alert_penalty,
+                })
+
+            since_24h = (datetime.now() - timedelta(hours=24)).isoformat()
+            failed_rows = _q(
+                "SELECT COUNT(*) AS c FROM auth_attempts WHERE success = 0 AND timestamp >= ?",
+                (since_24h,),
+            )
+            failed_24h = int(failed_rows[0].get('c') or 0) if failed_rows else 0
+            if failed_24h:
+                auth_penalty = min(int(failed_24h) * 2, 10)
+                security_score -= auth_penalty
+                security_factors.append({
+                    'label': f'{failed_24h} failed login(s) in 24h',
+                    'impact': -auth_penalty,
+                })
+
+            security_score = max(0, min(100, security_score))
+
+        if security_score is None:
+            security_grade = 'Collecting'
+        elif security_score >= 90:
+            security_grade = 'Excellent'
+        elif security_score >= 75:
+            security_grade = 'Good'
+        elif security_score >= 50:
+            security_grade = 'Warning'
+        else:
             security_grade = 'Critical'
 
         # ============================================================
@@ -2084,6 +2344,12 @@ def api_dashboard():
 
             'version':
                 '3.5',
+
+            # which device the payload describes (None = ALL EYES STAT)
+            'scope': {
+                'device_id': scope_device,
+                'label': 'ALL EYES STAT' if not scope_device else scope_device,
+            },
 
             # --------------------------------------------------------
             # DEVICES
@@ -2125,6 +2391,16 @@ def api_dashboard():
                         if telemetry_rows
                         else 'Waiting for telemetry'
                     ),
+
+                # real, explainable contributors - rendered by SecurityScore
+                'risk_factors':
+                    security_factors,
+
+                'factors':
+                    security_factors,
+
+                'telemetry_devices':
+                    len(all_telemetry),
             },
 
             # --------------------------------------------------------
@@ -2194,6 +2470,12 @@ def api_dashboard():
             # --------------------------------------------------------
 
             'charts': {
+
+                'alert_trend':
+                    charts_payload['alert_trend'],
+
+                'traffic_24h':
+                    charts_payload['traffic_24h'],
 
                 'cpu':
                     charts_payload['cpu'],
@@ -2479,7 +2761,7 @@ def api_command_result():
         add_notification('command', f'VECTOR RESULT from {hostname}: {result_text[:120]}')
 
         if not success:
-            add_alert_to_db(device_id, 'error', f'Command {command_id[:8]} failed: {result_text[:100]}')
+            add_alert_to_db(device_id, 'error', f'Command {command_id[:8]} failed: {result_text[:100]}', notify=False)
 
         return jsonify({'success': True}), 200
 
@@ -3663,7 +3945,17 @@ def cleanup_offline_devices():
                     if elapsed > 30 and dev['status'] == 'online':
                         dev['status'] = 'offline'
                         save_device_to_db(dev)
-                        add_notification('security', f'NODE OFFLINE: {dev["hostname"]} — No heartbeat for {int(elapsed)}s')
+                        # Notify once per device per cooldown window. Without this a
+                        # flapping agent flooded the bell with one entry per cycle.
+                        last = _offline_notified.get(dev_id, 0)
+                        if now.timestamp() - last > OFFLINE_NOTIFY_COOLDOWN:
+                            _offline_notified[dev_id] = now.timestamp()
+                            add_notification(
+                                'security',
+                                f'NODE OFFLINE: {dev["hostname"]} lost contact {int(elapsed)}s ago',
+                            )
+                            activity('DEVICE OFFLINE', device_id=dev_id[:8],
+                                     host=dev.get('hostname'), silent_for=f'{int(elapsed)}s')
                         print(f"[-] Device went offline: {dev['hostname']} ({dev_id[:8]}...)")
                         changed = True
                 except:

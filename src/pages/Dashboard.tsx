@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useDashboard, DashboardProvider } from '../context/DashboardContext';
+import { useDevices } from '../context/DeviceContext';
 import AmbientBackground from '../components/effects/AmbientBackground';
 import KpiStrip from '../components/dashboard/KpiStrip';
 import SecurityScore from '../components/dashboard/SecurityScore';
@@ -13,6 +14,9 @@ import DevicesStatsPanel from '../components/dashboard/DevicesStatsPanel';
 import TrafficAnalysisPanel from '../components/dashboard/TrafficAnalysisPanel';
 import SecurityActivityStrip from '../components/dashboard/SecurityActivityStrip';
 import SystemHealth from '../components/dashboard/SystemHealth';
+import AuthenticationPanel from '../components/dashboard/AuthenticationPanel';
+import AlertPanel from '../components/dashboard/AlertPanel';
+import DeviceRiskTable from '../components/dashboard/DeviceRiskTable';
 import QuickActions from '../components/dashboard/QuickActions';
 import FooterSummary from '../components/dashboard/FooterSummary';
 
@@ -33,12 +37,16 @@ const Section: React.FC<{ delay?: number; className?: string; children: React.Re
 );
 
 const DashboardPage: React.FC = () => {
-  const { data, loading } = useDashboard();
+  const { data, loading, scopeDeviceId } = useDashboard();
+  const { devices } = useDevices();
   const [now, setNow] = useState(new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  const scopeDevice = scopeDeviceId ? devices.find(d => d.id === scopeDeviceId) : null;
+  const scopeLabel = scopeDevice ? scopeDevice.hostname : 'ALL EYES STAT';
 
   if (!data && !loading) {
     return (
@@ -83,15 +91,26 @@ const DashboardPage: React.FC = () => {
       <Section delay={0}>
         <div className="flex items-end justify-between flex-wrap gap-3">
           <div>
-            <h1 className="text-2xl md:text-3xl font-orbitron font-bold tracking-[0.3em] neon-text">
-              COMMAND CENTER
-            </h1>
+            <div className="flex items-center gap-3 flex-wrap">
+              <h1 className="text-3xl md:text-4xl font-orbitron font-bold tracking-[0.28em] text-white aeyes-title-glow">
+                COMMAND <span className="text-[#22c55e]">CENTER</span>
+              </h1>
+              <span
+                className={`px-3 py-1 rounded-md text-[9px] font-orbitron tracking-[0.2em] uppercase border ${
+                  scopeDevice
+                    ? 'border-green-500/50 text-green-300 bg-green-500/10'
+                    : 'border-cyan-500/50 text-cyan-200 bg-cyan-500/10'
+                }`}
+              >
+                {scopeDevice ? `Node · ${scopeLabel}` : 'All Eyes Stat'}
+              </span>
+            </div>
             <p className="mt-1 text-[10px] font-mono-data text-[#22c55e] tracking-[0.35em] uppercase">
-              Full System Overview
+              {scopeDevice ? 'Single device intelligence' : 'Full System Overview'}
             </p>
             <div className="aeyes-divider mt-2 w-64 md:w-96" />
             <p className="text-[10px] font-mono-data text-slate-500 mt-2">
-              ALL EYES X · Dashboard Engine v{data?.version ?? '—'} · {data?.server_time ?? '—'}
+              ALL EYES X · Engine v{data?.version ?? '—'} · {data?.server_time ?? '—'}
             </p>
           </div>
           <div className="text-right">
@@ -139,7 +158,16 @@ const DashboardPage: React.FC = () => {
         </div>
       </Section>
 
-      {/* 6. SECURITY ACTIVITY + SYSTEM HEALTH */}
+      {/* 6. AUTHENTICATION MONITOR + ALERT CENTER + RISK RANKING */}
+      <Section delay={0.28}>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <AuthenticationPanel />
+          <AlertPanel />
+          <DeviceRiskTable />
+        </div>
+      </Section>
+
+      {/* 7. SECURITY ACTIVITY + SYSTEM HEALTH */}
       <Section delay={0.3}>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2">
@@ -167,10 +195,14 @@ const DashboardPage: React.FC = () => {
   );
 };
 
-const Dashboard: React.FC = () => (
-  <DashboardProvider>
-    <DashboardPage />
-  </DashboardProvider>
-);
+const Dashboard: React.FC = () => {
+  // Target Node from the header drives the whole Command Center scope.
+  const { selectedDevice } = useDevices();
+  return (
+    <DashboardProvider deviceId={selectedDevice?.id ?? null}>
+      <DashboardPage />
+    </DashboardProvider>
+  );
+};
 
 export default Dashboard;

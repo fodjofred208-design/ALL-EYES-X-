@@ -15,36 +15,50 @@ const PerformanceCharts: React.FC = () => {
   const { data } = useDashboard();
   const c = data?.charts;
 
-  const growth = (c?.device_growth?.labels ?? []).map((l: string, i: number) => ({ name: l.slice(5), devices: c?.device_growth?.values?.[i] ?? 0 }));
+  const growth = (c?.device_growth?.labels ?? []).map((l: string, i: number) => ({ name: String(l).slice(5), devices: c?.device_growth?.values?.[i] ?? 0 }));
   const alertTrend = (c?.alert_trend?.labels ?? []).map((l: string, i: number) => ({
-    name: l,
+    name: String(l).slice(5),
     critical: c?.alert_trend?.critical?.[i] ?? 0,
     high: c?.alert_trend?.high?.[i] ?? 0,
     medium: c?.alert_trend?.medium?.[i] ?? 0,
     low: c?.alert_trend?.low?.[i] ?? 0,
   }));
   const online = (c?.online_trend?.labels ?? []).map((l: string, i: number) => ({
-    name: l.split(':').slice(0, 2).join(':'),
+    name: String(l).split(':').slice(0, 2).join(':'),
     online: c?.online_trend?.online?.[i] ?? 0,
     offline: c?.online_trend?.offline?.[i] ?? 0,
   }));
 
+  // Never render an empty frame: a chart only appears when it has real points.
+  const hasCpu = (c?.cpu?.values ?? []).length > 0;
+  const hasTraffic = (c?.traffic_24h ?? []).length > 0;
+  const hasSecurity = (c?.threat?.values ?? []).length > 0;
+  const hasProtocols = (c?.protocols ?? []).length > 0;
+  const hasGrowth = growth.length > 0;
+  const hasAlerts = alertTrend.length > 0;
+  const hasOnline = online.length > 0;
+
+  const Empty: React.FC<{ text: string }> = ({ text }) => (
+    <p className="h-full flex items-center justify-center text-[9px] font-mono-data text-slate-600">{text}</p>
+  );
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <DashboardCard title="Traffic Trend" subtitle="KB/s · live samples" icon={<Network size={18} />} accent="#00d4ff">
-        <div className="h-48"><TrafficChart /></div>
+        <div className="h-48">{hasTraffic ? <TrafficChart /> : <Empty text="No traffic samples stored yet" />}</div>
       </DashboardCard>
       <DashboardCard title="CPU / RAM / Disk" subtitle="aggregate % across nodes" icon={<Cpu size={18} />} accent="#8b5cf6">
-        <div className="h-48"><CPUChart /></div>
+        <div className="h-48">{hasCpu ? <CPUChart /> : <Empty text="No telemetry stored yet" />}</div>
       </DashboardCard>
       <DashboardCard title="Security Score Trend" subtitle="0–100 from engine" icon={<ShieldAlert size={18} />} accent="#ef4444">
-        <div className="h-44"><ThreatChart /></div>
+        <div className="h-44">{hasSecurity ? <ThreatChart /> : <Empty text="No security history stored yet" />}</div>
       </DashboardCard>
       <DashboardCard title="Protocol Share" subtitle="estimated baseline (swappable)" icon={<Activity size={18} />} accent="#22c55e">
-        <div className="h-44"><ProtocolChart /></div>
+        <div className="h-44">{hasProtocols ? <ProtocolChart /> : <Empty text="Protocol breakdown not collected yet" />}</div>
       </DashboardCard>
       <DashboardCard title="Device Growth" subtitle="registrations per day" icon={<TrendingUp size={18} />} accent="#00d4ff">
         <div className="h-40">
+          {!hasGrowth ? <Empty text="No registration history stored yet" /> : (
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={growth}>
               <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
@@ -54,10 +68,12 @@ const PerformanceCharts: React.FC = () => {
               <Bar dataKey="devices" fill="#22c55e" radius={[3, 3, 0, 0]} barSize={18} />
             </BarChart>
           </ResponsiveContainer>
+          )}
         </div>
       </DashboardCard>
       <DashboardCard title="Alert Trend (24h)" subtitle="new alerts by severity" icon={<PieChart size={18} />} accent="#eab308">
         <div className="h-40">
+          {!hasAlerts ? <Empty text="No alerts recorded yet" /> : (
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={alertTrend}>
               <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
@@ -71,10 +87,12 @@ const PerformanceCharts: React.FC = () => {
               <Bar dataKey="low" stackId="a" fill="#00d4ff" barSize={8} />
             </BarChart>
           </ResponsiveContainer>
+          )}
         </div>
       </DashboardCard>
       <DashboardCard title="Online vs Offline" subtitle="fleet connectivity" icon={<Activity size={18} />} accent="#22c55e" className="lg:col-span-2">
         <div className="h-40">
+          {!hasOnline ? <Empty text="No connectivity history stored yet" /> : (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={online}>
               <defs>
@@ -96,6 +114,7 @@ const PerformanceCharts: React.FC = () => {
               <Area type="monotone" dataKey="offline" stroke="#64748b" fill="url(#gradOff)" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
+          )}
         </div>
       </DashboardCard>
     </div>

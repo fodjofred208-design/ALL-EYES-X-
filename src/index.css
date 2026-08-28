@@ -405,3 +405,60 @@
 
 /* --- topology map --- */
 .aeyes-topo svg { display: block; }
+/* ================================================================
+   COMMAND CENTER TITLE
+   ================================================================ */
+.aeyes-title-glow {
+  text-shadow:
+    0 0 6px rgba(255, 255, 255, 0.25),
+    0 0 22px rgba(34, 197, 94, 0.35);
+}
+
+/* ================================================================
+   WELCOME TYPEWRITER — fixed-height, top-anchored so new lines
+   grow DOWNWARD instead of pushing the header upward.
+   ================================================================ */
+.aeyes-typewriter {
+  min-height: 6.5rem;
+  text-align: left;
+  align-self: flex-start;
+}
+@media (min-width: 768px) {
+  .aeyes-typewriter { min-height: 7.5rem; }
+}
+.aeyes-typewriter p {
+  margin: 0;
+}
+
+/* ================================================================
+   DEVICE CARD (Connected Devices panel)
+   ================================================================ */
+.aeyes-devcard {
+  position: relative;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: linear-gradient(145deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015));
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+.aeyes-devcard:hover {
+  transform: translateY(-2px);
+  border-color: rgba(34, 197, 94, 0.45);
+  background: linear-gradient(145deg, rgba(34,197,94,0.10), rgba(255,255,255,0.02));
+}
+.aeyes-devcard::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 12%; bottom: 12%;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--aeyes-accent, #22c55e);
+  opacity: 0.85;
+}
+
+/* Compact card variant — height follows content, no padded-out empty space */
+.aeyes-card--compact {
+  padding-bottom: 10px;
+}
+.aeyes-card--compact .aeyes-card__body {
+  min-height: 0;
+}
