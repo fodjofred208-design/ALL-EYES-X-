@@ -47,7 +47,7 @@ const TouchMonitor = () => {
   const pollScreen = useCallback(async () => {
     if (!selectedDevice || !isMirroring) return;
     try {
-      const res = await fetch(`${API_BASE}/api/screenshot/${selectedDevice.id}`);
+      const res = await fetch(`${API_BASE}/api/screenshot/${selectedDevice.id}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         if (data.image) setRemoteScreen(`data:image/jpeg;base64,${data.image}`);

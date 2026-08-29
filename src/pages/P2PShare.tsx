@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { useSocket } from '../context/SocketContext';
 import { useDevices } from '../context/DeviceContext';
 import { API_BASE, apiFetch } from '../utils/api';
+import { usePolling } from '../hooks/usePolling';
 
 interface TransferItem {
   transfer_id: string;
@@ -35,11 +36,8 @@ const P2PShare = () => {
     }
   }, [historyHidden]);
 
-  useEffect(() => {
-    fetchTransfers();
-    const interval = setInterval(fetchTransfers, 5000);
-    return () => clearInterval(interval);
-  }, [fetchTransfers]);
+  // Pauses while the tab is hidden, and only polls when history is visible.
+  usePolling(fetchTransfers, 5000, !historyHidden);
 
   // SocketIO file transfer updates
   useEffect(() => {

@@ -17,6 +17,7 @@ import { Download, Share2, Calendar, RefreshCw, Zap, Signal } from 'lucide-react
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSocket } from '../context/SocketContext';
 import { apiFetch } from '../utils/api';
+import { usePolling } from '../hooks/usePolling';
 
 const COLORS = ['#22c55e', '#00d4ff', '#ef4444', '#eab308'];
 
@@ -38,11 +39,8 @@ const Analytics = () => {
     }
   }, []);
 
-  useEffect(() => {
-    fetchAnalytics();
-    const interval = setInterval(fetchAnalytics, 5000);
-    return () => clearInterval(interval);
-  }, [fetchAnalytics]);
+  // Pauses while the tab is hidden.
+  usePolling(fetchAnalytics, 5000);
 
   // Real-time refresh via SocketIO
   useEffect(() => {

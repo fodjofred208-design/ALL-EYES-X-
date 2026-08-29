@@ -8,6 +8,7 @@ import React, {
 } from 'react';
 import { apiFetch } from '../utils/api';
 import { normalizeDevices } from '../utils/normalize';
+import { usePolling } from '../hooks/usePolling';
 
 interface Device {
   id: string;
@@ -85,10 +86,6 @@ export const DeviceProvider: React.FC<{
   const [selectedDeviceId, setSelectedDeviceId] =
     useState<string | null>(null);
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(
-    null
-  );
-
   const fetchDevices = useCallback(async () => {
     try {
       const json = await apiFetch<any>('/api/devices');
@@ -135,17 +132,8 @@ export const DeviceProvider: React.FC<{
     }
   }, []);
 
-  useEffect(() => {
-    fetchDevices();
-
-    intervalRef.current = setInterval(fetchDevices, 5000);
-
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
-    };
-  }, [fetchDevices]);
+  // Pauses while the tab is hidden — this is the highest-traffic poller.
+  usePolling(fetchDevices, 5000);
 
   const refreshDevices = useCallback(async () => {
     setLoading(true);

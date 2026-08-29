@@ -65,7 +65,7 @@ const Webcam = () => {
     if (inFlightRef.current) return;   // never stack overlapping requests
     inFlightRef.current = true;
     try {
-      const res = await fetch(`${API_BASE}/api/webcam/${selectedDevice.id}`);
+      const res = await fetch(`${API_BASE}/api/webcam/${selectedDevice.id}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         if (data.image) {

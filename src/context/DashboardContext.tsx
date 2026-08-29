@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE } from '../utils/api';
 import { computeDeviceTotals } from '../utils/normalize';
+import { usePolling } from '../hooks/usePolling';
 
 interface DashboardCtx {
   data: any | null;
@@ -29,7 +30,6 @@ export const DashboardProvider: React.FC<ProviderProps> = ({ children, deviceId 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const scopeDeviceId = deviceId || null;
 
   /**
@@ -123,7 +123,7 @@ export const DashboardProvider: React.FC<ProviderProps> = ({ children, deviceId 
   const fetchData = useCallback(async () => {
     try {
       const suffix = scopeDeviceId ? `?device_id=${encodeURIComponent(scopeDeviceId)}` : '';
-      const res = await fetch(`${API_BASE}/api/dashboard${suffix}`);
+      const res = await fetch(`${API_BASE}/api/dashboard${suffix}`, { credentials: 'include' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const raw = await res.json();
       if (raw.error) throw new Error(raw.message || raw.error);
@@ -137,11 +137,8 @@ export const DashboardProvider: React.FC<ProviderProps> = ({ children, deviceId 
     }
   }, [normalize, scopeDeviceId]);
 
-  useEffect(() => {
-    fetchData();
-    timer.current = setInterval(fetchData, POLL_MS);
-    return () => { if (timer.current) clearInterval(timer.current); };
-  }, [fetchData]);
+  // Pauses while the tab is hidden.
+  usePolling(fetchData, POLL_MS);
 
   const refresh = useCallback(() => { setLoading(true); fetchData(); }, [fetchData]);
 

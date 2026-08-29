@@ -203,7 +203,7 @@ const LiveMonitor = () => {
     inFlightRef.current = true;
 
     try {
-      const res = await fetch(`${API_BASE}/api/screenshot/${selectedDevice.id}`);
+      const res = await fetch(`${API_BASE}/api/screenshot/${selectedDevice.id}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         if (data.image) {
@@ -249,7 +249,7 @@ const LiveMonitor = () => {
     let stop = false;
     const load = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/stream/stats/${selectedDevice.id}`);
+        const res = await fetch(`${API_BASE}/api/stream/stats/${selectedDevice.id}`, { credentials: 'include' });
         if (res.ok && !stop) setServerStats(await res.json());
       } catch { /* keep last known stats */ }
     };

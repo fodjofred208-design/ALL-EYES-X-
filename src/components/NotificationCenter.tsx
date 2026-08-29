@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { BellRing, X, Terminal, Download, Zap, ShieldAlert, Activity } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_BASE } from '../utils/api';
+import { usePolling } from '../hooks/usePolling';
 
 interface SystemLog { id: string; type: string; message: string; timestamp: number | string }
 
@@ -56,7 +57,7 @@ const NotificationCenter = () => {
   
   const fetchNotifications = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/notifications`);
+      const res = await fetch(`${API_BASE}/api/notifications`, { credentials: 'include' });
       if (!res.ok) return;
       const data = await res.json();
       if (!Array.isArray(data)) return;
@@ -97,11 +98,8 @@ const NotificationCenter = () => {
     }
   }, [isOpen]);
 
-  useEffect(() => {
-    fetchNotifications();
-    const id = setInterval(fetchNotifications, 3000);
-    return () => clearInterval(id);
-  }, [fetchNotifications]);
+  // Pauses while the tab is hidden.
+  usePolling(fetchNotifications, 3000);
 
   // open the panel from anywhere (Quick Actions → Notifications)
   useEffect(() => {

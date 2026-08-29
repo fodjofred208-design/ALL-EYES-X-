@@ -927,37 +927,58 @@ def persist_telemetry(device_id, data):
     except Exception:
         battery_value = -1
 
+    # Heartbeats do not always carry the full telemetry block - the agent caches
+    # it and refreshes on its own interval. INSERT OR REPLACE therefore used to
+    # zero out cpu/ram/disk/firewall on every telemetry-less heartbeat, silently
+    # destroying the last good reading. Only the keys actually present are
+    # written now; everything else keeps its previous value.
     conn = get_db()
-    conn.execute("""
-        INSERT OR REPLACE INTO telemetry
-        (device_id, cpu, ram, disk, net_sent, net_recv, firewall, antivirus,
-         open_ports, boot_time, logged_user, gpu, wifi, battery, malware_detected, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
-        device_id,
-        float(data.get('cpu') or 0),
-        float(data.get('ram') or 0),
-        float(data.get('disk') or 0),
-        float(data.get('net_sent') or 0),
-        float(data.get('net_recv') or 0),
-        bool_int(data.get('firewall')),
-        bool_int(data.get('antivirus')),
-        open_ports,
-        str(data.get('boot_time') or ''),
-        str(data.get('logged_user') or ''),
-        str(data.get('gpu') or ''),
-        str(data.get('wifi') or ''),
-        battery_value,
-        1 if data.get('malware_detected') else 0,
-        now_iso,
-    ))
-    conn.execute(
-        "INSERT INTO traffic_samples (ts, device_id, download, upload) VALUES (?,?,?,?)",
-        (time.time(), device_id, float(data.get('net_recv') or 0), float(data.get('net_sent') or 0))
-    )
-    conn.execute("DELETE FROM traffic_samples WHERE id NOT IN (SELECT id FROM traffic_samples ORDER BY id DESC LIMIT 5000)")
-    conn.commit()
-    conn.close()
+    try:
+        existing = conn.execute(
+            "SELECT * FROM telemetry WHERE device_id=?", (device_id,)
+        ).fetchone()
+        prev = dict(existing) if existing else {}
+
+        def pick(key, new_value, default):
+            """Use the incoming value only when the payload actually has the key."""
+            return new_value if key in data and data[key] is not None else prev.get(key, default)
+
+        conn.execute("""
+            INSERT OR REPLACE INTO telemetry
+            (device_id, cpu, ram, disk, net_sent, net_recv, firewall, antivirus,
+             open_ports, boot_time, logged_user, gpu, wifi, battery, malware_detected, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            device_id,
+            float(pick('cpu', data.get('cpu'), 0) or 0),
+            float(pick('ram', data.get('ram'), 0) or 0),
+            float(pick('disk', data.get('disk'), 0) or 0),
+            float(pick('net_sent', data.get('net_sent'), 0) or 0),
+            float(pick('net_recv', data.get('net_recv'), 0) or 0),
+            bool_int(pick('firewall', data.get('firewall'), -1)),
+            bool_int(pick('antivirus', data.get('antivirus'), -1)),
+            open_ports if 'open_ports' in data else prev.get('open_ports', '[]'),
+            str(pick('boot_time', data.get('boot_time'), '') or ''),
+            str(pick('logged_user', data.get('logged_user'), '') or ''),
+            str(pick('gpu', data.get('gpu'), '') or ''),
+            str(pick('wifi', data.get('wifi'), '') or ''),
+            battery_value if 'battery' in data else prev.get('battery', -1),
+            (1 if data.get('malware_detected') else 0) if 'malware_detected' in data
+                else prev.get('malware_detected', 0),
+            now_iso,
+        ))
+
+        # Only record a traffic sample when the agent actually reported counters,
+        # otherwise telemetry-less heartbeats pollute the trend with 0,0 points.
+        if 'net_sent' in data or 'net_recv' in data:
+            conn.execute(
+                "INSERT INTO traffic_samples (ts, device_id, download, upload) VALUES (?,?,?,?)",
+                (time.time(), device_id, float(data.get('net_recv') or 0), float(data.get('net_sent') or 0))
+            )
+            conn.execute("DELETE FROM traffic_samples WHERE id NOT IN (SELECT id FROM traffic_samples ORDER BY id DESC LIMIT 5000)")
+        conn.commit()
+    finally:
+        conn.close()
 
 # ============================================================
 # In-memory cache
@@ -991,6 +1012,26 @@ def login_required(f):
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated
+
+
+def login_required_for(*methods):
+    """Require a session only for the listed HTTP methods.
+
+    Several endpoints are dual-purpose: the agent POSTs frames to them (it has no
+    session cookie, so it must stay reachable) while the administrator browser
+    GETs the same path. Locking the whole route would break the agent, so the
+    admin-facing methods are protected individually.
+    """
+    protected = {m.upper() for m in methods}
+
+    def wrapper(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            if request.method.upper() in protected and 'user' not in session:
+                return jsonify({'error': 'Unauthorized', 'message': 'Login required'}), 401
+            return f(*args, **kwargs)
+        return decorated
+    return wrapper
 
 # ============================================================
 # ROUTES: AUTHENTICATION
@@ -1282,8 +1323,38 @@ def api_register():
 # ============================================================
 # Helper: Build device list for dashboard
 # ============================================================
+def get_alerts_grouped(device_ids):
+    """Fetch alerts for many devices in ONE query.
+
+    Replaces a per-device query inside the dashboard loop, which opened a fresh
+    SQLite connection per device on every 5s poll.
+    """
+    ids = [d for d in device_ids if d]
+    if not ids:
+        return {}
+    placeholders = ','.join('?' * len(ids))
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM alerts WHERE device_id IN ({placeholders}) "
+            f"ORDER BY timestamp DESC",
+            ids,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    grouped = {}
+    for r in rows:
+        d = dict(r)
+        bucket = grouped.setdefault(d.get('device_id'), [])
+        if len(bucket) < 50:   # same per-device cap the old query applied
+            bucket.append(d)
+    return grouped
+
+
 def get_device_list_for_dashboard():
     devices_list = []
+    alerts_by_device = get_alerts_grouped(list(connected_devices.keys()))
     for dev_id, dev in connected_devices.items():
         devices_list.append({
             'id': dev_id,
@@ -1304,7 +1375,7 @@ def get_device_list_for_dashboard():
             'architecture': dev.get('architecture', ''),
             'latitude': dev.get('latitude', 0.0),
             'longitude': dev.get('longitude', 0.0),
-            'alerts': get_alerts_from_db(dev_id)
+            'alerts': alerts_by_device.get(dev_id, [])
         })
     
     devices_list.sort(
@@ -2898,6 +2969,17 @@ def api_command_result():
 
         add_notification('command', f'VECTOR RESULT from {hostname}: {result_text[:120]}')
 
+        # client.py is HTTP-only, so this route - not the socket handler - is the
+        # path results actually arrive on. SocketIO.emit() already broadcasts to
+        # every connected client, so the Terminal and Multi-Shell panes update
+        # live instead of waiting on a poll. (It takes no `broadcast` kwarg.)
+        socketio.emit('command_completed', {
+            'device_id': device_id,
+            'command_id': command_id,
+            'result': result_text,
+            'success': success,
+        })
+
         if not success:
             add_alert_to_db(device_id, 'error', f'Command {command_id[:8]} failed: {result_text[:100]}', notify=False)
 
@@ -3078,6 +3160,7 @@ def handle_touch():
 # SCREENSHOT STREAMING
 # ============================================================
 @app.route('/api/screenshot/<device_id>', methods=['GET', 'POST'])
+@login_required_for('GET')
 def api_screenshot(device_id):
     if request.method == 'POST':
         try:
@@ -3200,6 +3283,7 @@ def api_stream_stats(device_id):
 
 
 @app.route('/api/screenshot/<device_id>/latest', methods=['GET'])
+@login_required
 def api_screenshot_latest(device_id):
     """Raw JPEG of the newest stored frame, for the multi-device wall.
 
@@ -3241,6 +3325,7 @@ def _queue_webcam_command(device_id, payload, action):
 # WEBCAM STREAMING
 # ============================================================
 @app.route('/api/webcam/<device_id>', methods=['GET', 'POST'])
+@login_required_for('GET')
 def api_webcam(device_id):
     if request.method == 'POST':
         try:
@@ -3275,6 +3360,7 @@ def api_webcam(device_id):
 
 
 @app.route('/api/webcam/<device_id>/latest', methods=['GET'])
+@login_required
 def api_webcam_latest(device_id):
     """Raw JPEG of the newest webcam frame, for the multi-camera wall."""
     b64 = latest_webcam_frames.get(device_id)
@@ -3556,6 +3642,7 @@ def api_device_detail_full(device_id):
 # DEVICE REMOVAL
 # ============================================================
 @app.route('/api/device/<device_id>/remove', methods=['POST'])
+@login_required
 def api_device_remove(device_id):
     if device_id not in connected_devices:
         return jsonify({'error': 'Device not found'}), 404
@@ -4467,12 +4554,14 @@ def handle_command_result(data):
     command_id = data.get('command_id', '')
     result = data.get('result', '')
     success = data.get('success', True)
+    # broadcast=True, otherwise the event returns only to the emitting client
+    # and no administrator browser ever sees the result.
     emit('command_completed', {
         'device_id': device_id,
         'command_id': command_id,
         'result': result,
         'success': success
-    })
+    }, broadcast=True)
 
 
 # ============================================================
@@ -4510,6 +4599,58 @@ def handle_exception(e):
 # ============================================================
 # BACKGROUND: CLEANUP OFFLINE DEVICES
 # ============================================================
+# ============================================================
+# RETENTION
+#
+# Several tables grow one row per event with no cap. On a modest Windows 10 Pro
+# box running for weeks that is an ever-growing SQLite file and slower queries.
+# Row limits are deliberately generous - this is a safety net, not aggressive
+# pruning, so recent evidence is never lost.
+# ============================================================
+RETENTION_LIMITS = {
+    'alerts': 5000,
+    'audit_log': 10000,
+    'command_results': 5000,
+    'auth_attempts': 5000,
+    'remote_sessions': 2000,
+    'security_scans': 500,
+}
+RETENTION_INTERVAL_SECONDS = 3600
+
+
+def prune_old_rows():
+    """Trim the oldest rows from each unbounded table."""
+    conn = get_db()
+    removed = {}
+    try:
+        for table, limit in RETENTION_LIMITS.items():
+            cur = conn.execute(
+                f"DELETE FROM {table} WHERE id NOT IN "
+                f"(SELECT id FROM {table} ORDER BY id DESC LIMIT ?)",
+                (limit,),
+            )
+            if cur.rowcount:
+                removed[table] = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if removed:
+        detail = ', '.join(f'{t}=-{n}' for t, n in removed.items())
+        print(f"[RETENTION] pruned {detail}")
+    return removed
+
+
+def retention_loop():
+    # Give startup room to finish before the first sweep.
+    time.sleep(120)
+    while True:
+        try:
+            prune_old_rows()
+        except Exception as e:
+            print(f"[RETENTION] sweep failed: {e}")
+        time.sleep(RETENTION_INTERVAL_SECONDS)
+
+
 def cleanup_offline_devices():
     while True:
         time.sleep(15)
@@ -4575,6 +4716,9 @@ if __name__ == '__main__':
 
     cleanup_thread = threading.Thread(target=cleanup_offline_devices, daemon=True)
     cleanup_thread.start()
+
+    retention_thread = threading.Thread(target=retention_loop, daemon=True)
+    retention_thread.start()
 
     socketio.run(
     app,

@@ -17,7 +17,7 @@ const AlertPanel: React.FC = () => {
 
   const resolve = async (id: number) => {
     try {
-      await fetch(`${API_BASE}/api/alerts/${id}/resolve`, { method: 'POST' });
+      await fetch(`${API_BASE}/api/alerts/${id}/resolve`, { method: 'POST', credentials: 'include' });
       refresh();
     } catch {
       /* ignore network errors */
