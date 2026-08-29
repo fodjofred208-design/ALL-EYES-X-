@@ -2923,6 +2923,7 @@ def ack_touch_event(device_id):
 
 
 @app.route('/api/touch', methods=['POST'])
+@login_required
 def handle_touch():
     global touch_event_counter, touch_event_queues
     
@@ -3064,6 +3065,25 @@ def api_screenshot_latest(device_id):
     })
 
 
+def _queue_webcam_command(device_id, payload, action):
+    """Deliver a webcam command over the heartbeat queue and audit it."""
+    pending_tasks_queue.setdefault(device_id, []).append({
+        'id': str(uuid.uuid4()),
+        'type': 'webcam_command',
+        'command': payload.get('command'),
+        'camera': payload.get('camera', 'front'),
+        'interval': payload.get('interval', 200),
+        'timestamp': datetime.now().isoformat(),
+    })
+    hostname = connected_devices.get(device_id, {}).get('hostname', device_id[:8])
+    actor = session.get('user', 'unknown-admin')
+    audit_event(actor, device_id, f'webcam_{action}', 'requested',
+                f"camera={payload.get('camera', 'front')}")
+    activity('WEBCAM ' + action.upper(), device_id=device_id[:8], host=hostname, by=actor)
+    if action == 'start':
+        add_notification('security', f'CAMERA ACTIVE: {actor} opened the camera on {hostname}')
+
+
 # ============================================================
 # WEBCAM STREAMING
 # ============================================================
@@ -3117,42 +3137,47 @@ def api_webcam_latest(device_id):
 
 
 @app.route('/api/webcam/<device_id>/start', methods=['POST'])
+@login_required
 def start_webcam(device_id):
     data = request.get_json() or {}
     camera = data.get('camera', 'front')
     interval = data.get('interval', 200)
-    
-    socketio.emit('webcam_command', {
+
+    payload = {
         'device_id': device_id,
         'command': 'start',
         'camera': camera,
         'interval': interval,
-    })
-    
+    }
+    socketio.emit('webcam_command', payload)
+    # client.py is HTTP-only and has no Socket.IO connection, so the emit above
+    # never reaches it. Queue the command on the heartbeat path as well, and log
+    # it - camera access must never be invisible.
+    _queue_webcam_command(device_id, payload, 'start')
+
     return jsonify({'status': 'started', 'device_id': device_id})
 
 
 @app.route('/api/webcam/<device_id>/stop', methods=['POST'])
+@login_required
 def stop_webcam(device_id):
-    socketio.emit('webcam_command', {
-        'device_id': device_id,
-        'command': 'stop',
-    })
-    
+    payload = {'device_id': device_id, 'command': 'stop'}
+    socketio.emit('webcam_command', payload)
+    _queue_webcam_command(device_id, payload, 'stop')
+
     return jsonify({'status': 'stopped', 'device_id': device_id})
 
 
 @app.route('/api/webcam/<device_id>/switch', methods=['POST'])
+@login_required
 def switch_webcam(device_id):
     data = request.get_json() or {}
     camera = data.get('camera', 'front')
-    
-    socketio.emit('webcam_command', {
-        'device_id': device_id,
-        'command': 'switch',
-        'camera': camera,
-    })
-    
+
+    payload = {'device_id': device_id, 'command': 'switch', 'camera': camera}
+    socketio.emit('webcam_command', payload)
+    _queue_webcam_command(device_id, payload, 'switch')
+
     return jsonify({'status': 'switched', 'device_id': device_id})
 
 

