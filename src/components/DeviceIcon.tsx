@@ -30,6 +30,13 @@ const DeviceIcon: React.FC<DeviceIconProps> = ({
   const isMac = combined.includes('darwin') || combined.includes('macos') || combined.includes('mac');
   const isAndroid = combined.includes('android');
   const isIos = combined.includes('ios') || combined.includes('iphone') || combined.includes('ipad');
+  const isRouter = /router|gateway|firewall|pfsense|opnsense|openwrt|dd[--]?wrt|mikrotik|unifi|asus.*rt|tp[--]?link/.test(combined);
+  const isSwitch = /switch|vlan|netgear|cisco.*sg|aruba|zyxel/.test(combined);
+  const isPrinter = /printer|print server|brother|epson|hp laserjet|canon.*pixma|ricoh|kyocera/.test(combined);
+  const isServer = /server|nas|synology|qnap|proxmox|esxi|vmware|hyper-v|domain controller|dc0|srv0|windows server|ubuntu server|debian server/.test(combined);
+  const isTablet = /tablet|ipad|galaxy tab|surface/.test(combined);
+  const isCamera = /camera|webcam|ip cam|reolink|dahua|hikvision|ring/.test(combined);
+  const isVm = /virtual|vm\b|vbox|virtualbox|qemu|kvm|docker|container|wsl/.test(combined);
 
   // Offline (or unknown OS) — neutral monitor.
   if (!online) {
@@ -38,6 +45,84 @@ const DeviceIcon: React.FC<DeviceIconProps> = ({
         <rect x="3" y="3" width="18" height="13" rx="2" stroke="currentColor" strokeWidth="1.5" fill="none" />
         <path d="M8 20h8" stroke="currentColor" strokeWidth="1.5" />
         <path d="M12 16v4" stroke="currentColor" strokeWidth="1.5" />
+      </svg>
+    );
+  }
+
+  if (isRouter) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+        <rect x="2.5" y="12" width="19" height="7" rx="2" stroke="currentColor" strokeWidth="1.5" fill="currentColor" fillOpacity="0.15" />
+        <circle cx="6" cy="15.5" r="0.9" fill="currentColor" />
+        <circle cx="9" cy="15.5" r="0.9" fill="currentColor" opacity="0.6" />
+        <path d="M12 12V7.5M12 7.5 9.6 9.6M12 7.5l2.4 2.1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        <path d="M7.5 5.2a6.4 6.4 0 0 1 9 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" opacity="0.7" />
+      </svg>
+    );
+  }
+
+  if (isSwitch) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+        <rect x="2.5" y="9" width="19" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.5" fill="currentColor" fillOpacity="0.15" />
+        {[5.5, 8.5, 11.5, 14.5, 17.5].map((x, i) => (
+          <rect key={i} x={x} y="11" width="1.6" height="2.4" rx="0.4" fill="currentColor" opacity={0.9 - i * 0.12} />
+        ))}
+        <path d="M6 9V6M12 9V4.5M18 9V6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      </svg>
+    );
+  }
+
+  if (isPrinter) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+        <path d="M7 9V3.8h10V9" stroke="currentColor" strokeWidth="1.5" />
+        <rect x="3" y="9" width="18" height="7" rx="1.8" stroke="currentColor" strokeWidth="1.5" fill="currentColor" fillOpacity="0.15" />
+        <rect x="7" y="16" width="10" height="4.4" rx="1" stroke="currentColor" strokeWidth="1.4" />
+        <circle cx="17.6" cy="12" r="0.9" fill="currentColor" />
+      </svg>
+    );
+  }
+
+  if (isServer) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+        {[3.5, 9.5, 15.5].map((y, i) => (
+          <g key={i}>
+            <rect x="3.5" y={y} width="17" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.4" fill="currentColor" fillOpacity="0.14" />
+            <circle cx="6.6" cy={y + 2.5} r="0.85" fill="currentColor" />
+            <path d={`M10 ${y + 2.5}h7.4`} stroke="currentColor" strokeWidth="1.2" opacity="0.5" />
+          </g>
+        ))}
+      </svg>
+    );
+  }
+
+  if (isTablet) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+        <rect x="4.5" y="2.5" width="15" height="19" rx="2.4" stroke="currentColor" strokeWidth="1.6" fill="currentColor" fillOpacity="0.12" />
+        <circle cx="12" cy="18.8" r="1" fill="currentColor" opacity="0.8" />
+      </svg>
+    );
+  }
+
+  if (isCamera) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+        <rect x="2.5" y="7" width="13" height="9" rx="2" stroke="currentColor" strokeWidth="1.5" fill="currentColor" fillOpacity="0.15" />
+        <path d="M15.5 11.5 21.5 8v8l-6-3.5z" stroke="currentColor" strokeWidth="1.4" fill="currentColor" fillOpacity="0.2" />
+        <circle cx="9" cy="11.5" r="2.4" stroke="currentColor" strokeWidth="1.3" />
+      </svg>
+    );
+  }
+
+  if (isVm) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+        <rect x="3" y="4" width="18" height="12" rx="2" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 2" fill="currentColor" fillOpacity="0.1" />
+        <rect x="7" y="7.5" width="10" height="5" rx="1" stroke="currentColor" strokeWidth="1.3" />
+        <path d="M8 20h8M12 16v4" stroke="currentColor" strokeWidth="1.4" />
       </svg>
     );
   }
