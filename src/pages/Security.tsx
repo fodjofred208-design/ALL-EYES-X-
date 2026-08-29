@@ -10,7 +10,8 @@ import {
   Zap,
   RefreshCw,
   Search,
-  Clock
+  Clock,
+  ChevronDown
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import { useSocket } from '../context/SocketContext';
@@ -48,7 +49,7 @@ interface NmapScan {
   error?: string;
   queued_at?: string;
   completed_at?: string;
-  parsed?: { open_ports?: Array<{ host: string; port: number; protocol: string; service?: string; product?: string; version?: string }> };
+  parsed?: { open_ports?: Array<{ host?: string; port: number; protocol: string; state?: string; service?: string; product?: string; version?: string }> };
 }
 
 interface TimelineEvent {
@@ -74,6 +75,7 @@ const Security = () => {
   const [nmapScanType, setNmapScanType] = useState('top_ports');
   const [nmapMessage, setNmapMessage] = useState('');
   const [nmapScans, setNmapScans] = useState<NmapScan[]>([]);
+  const [expandedScan, setExpandedScan] = useState<string | null>(null);
 
   // --- Network discovery (host sweep on the server's own network) ---
   const [discTarget, setDiscTarget] = useState('');
@@ -112,6 +114,8 @@ const Security = () => {
   useEffect(() => {
     fetchSecurity();
     fetchNmapScans();
+    // While a scan is still queued the agent has not reported back yet; keep
+    // polling until it lands instead of waiting for the slow 10s cycle.
     fetchTimeline();
     const interval = setInterval(() => {
       fetchSecurity();
@@ -360,26 +364,107 @@ const Security = () => {
           </div>
         </div>
         {nmapMessage && <p className="mt-3 text-[11px] font-mono-data text-green-400">{nmapMessage}</p>}
-        <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-3">
-          {nmapScans.slice(0, 4).map(scan => (
-            <div key={scan.scan_id} className="p-3 rounded-xl bg-black/30 border border-white/5">
-              <div className="flex justify-between gap-3">
-                <div>
-                  <p className="text-xs font-orbitron text-white uppercase">{scan.scan_type} → {scan.target}</p>
-                  <p className="text-[10px] text-slate-500 font-mono-data">{scan.hostname || scan.device_id} · {scan.scan_id.slice(0, 8)}</p>
-                </div>
-                <span className={`text-[10px] font-orbitron uppercase ${scan.status === 'completed' ? 'text-green-400' : scan.status === 'failed' ? 'text-red-400' : 'text-yellow-400'}`}>{scan.status}</span>
+        <div className="mt-5 space-y-2">
+          {nmapScans.slice(0, 8).map(scan => {
+            const ports = scan.parsed?.open_ports ?? [];
+            const isOpen = expandedScan === scan.scan_id;
+            const running = scan.status !== 'completed' && scan.status !== 'failed';
+            return (
+              <div key={scan.scan_id} className="rounded-xl bg-black/30 border border-white/5 overflow-hidden">
+                {/* row header — click to expand the full port table */}
+                <button
+                  onClick={() => setExpandedScan(isOpen ? null : scan.scan_id)}
+                  className="w-full p-3 flex items-center justify-between gap-3 text-left hover:bg-white/[0.03] transition-colors"
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-orbitron text-white uppercase truncate">
+                      {scan.scan_type} → {scan.target}
+                    </p>
+                    <p className="text-[10px] text-slate-500 font-mono-data truncate">
+                      {scan.hostname || scan.device_id} · {scan.scan_id.slice(0, 8)}
+                      {scan.completed_at ? ` · ${scan.completed_at.slice(11, 19)}` : ''}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    {ports.length > 0 && (
+                      <span className="text-[10px] font-mono-data text-slate-400">{ports.length} open</span>
+                    )}
+                    <span className={`text-[10px] font-orbitron uppercase ${
+                      scan.status === 'completed' ? 'text-green-400'
+                        : scan.status === 'failed' ? 'text-red-400' : 'text-yellow-400'
+                    }`}>
+                      {running ? 'running…' : scan.status}
+                    </span>
+                    <ChevronDown size={14} className={`text-slate-600 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+                  </div>
+                </button>
+
+                {scan.error && (
+                  <p className="px-3 pb-2 text-[10px] text-red-400 font-mono-data">{scan.error}</p>
+                )}
+
+                {/* collapsed summary */}
+                {!isOpen && ports.length > 0 && (
+                  <p className="px-3 pb-3 text-[10px] text-slate-500 font-mono-data truncate">
+                    {ports.slice(0, 6).map(pt => `${pt.port}/${pt.protocol}${pt.service ? ` ${pt.service}` : ''}`).join(', ')}
+                    {ports.length > 6 ? ` +${ports.length - 6} more` : ''}
+                  </p>
+                )}
+
+                {/* expanded: full port table + report download */}
+                {isOpen && (
+                  <div className="px-3 pb-3">
+                    {ports.length === 0 ? (
+                      <p className="text-[10px] text-slate-600 font-mono-data py-2">
+                        {running ? 'Waiting for the agent to report back…' : 'No open ports reported.'}
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className="text-[9px] font-orbitron text-slate-500 uppercase tracking-widest border-b border-white/5">
+                              <th className="py-1.5 pr-3">Port</th>
+                              <th className="py-1.5 pr-3">Proto</th>
+                              <th className="py-1.5 pr-3">State</th>
+                              <th className="py-1.5 pr-3">Service</th>
+                              <th className="py-1.5">Version</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {ports.map((pt, i) => (
+                              <tr key={i} className="border-b border-white/5 last:border-0">
+                                <td className="py-1.5 pr-3 text-[10px] font-mono-data text-green-400">{pt.port}</td>
+                                <td className="py-1.5 pr-3 text-[10px] font-mono-data text-slate-400">{pt.protocol}</td>
+                                <td className="py-1.5 pr-3 text-[10px] font-mono-data text-slate-400">{pt.state || 'open'}</td>
+                                <td className="py-1.5 pr-3 text-[10px] font-mono-data text-slate-300">{pt.service || '—'}</td>
+                                <td className="py-1.5 text-[10px] font-mono-data text-slate-500">
+                                  {[pt.product, pt.version].filter(Boolean).join(' ') || '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    <div className="mt-3 flex gap-2">
+                      <a
+                        href={`${API_BASE}/api/discovery/scan/${scan.scan_id}/download`}
+                        className="px-3 py-1.5 rounded-lg border border-green-500/30 text-[9px] font-orbitron uppercase text-green-400 hover:bg-green-600 hover:text-white transition-all"
+                      >
+                        Download report
+                      </a>
+                      <button
+                        onClick={fetchNmapScans}
+                        className="px-3 py-1.5 rounded-lg border border-white/10 text-[9px] font-orbitron uppercase text-slate-400 hover:text-white transition-all"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
-              {scan.error && <p className="mt-2 text-[10px] text-red-400 font-mono-data">{scan.error}</p>}
-              {scan.parsed?.open_ports?.length ? (
-                <div className="mt-2 text-[10px] text-slate-400 font-mono-data">
-                  Open: {scan.parsed.open_ports.slice(0, 6).map(p => `${p.port}/${p.protocol}${p.service ? ` ${p.service}` : ''}`).join(', ')}
-                </div>
-              ) : (
-                <p className="mt-2 text-[10px] text-slate-600 font-mono-data">No parsed open ports yet.</p>
-              )}
-            </div>
-          ))}
+            );
+          })}
           {nmapScans.length === 0 && <p className="text-xs text-slate-600 font-rajdhani">No Nmap scans recorded yet.</p>}
         </div>
       </div>

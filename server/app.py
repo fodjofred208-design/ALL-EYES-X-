@@ -4153,14 +4153,33 @@ def api_discovery_download(scan_id):
     except Exception:
         parsed = {}
 
-    for h in parsed.get('hosts', []):
-        agent = 'yes' if h.get('agent_installed') else 'no'
-        lines.append(
-            f"{h.get('ip',''):<18} {h.get('hostname','') or '-':<24} "
-            f"state={h.get('state','')}  agent={agent}"
-        )
+    hosts = parsed.get('hosts') or []
+    ports = parsed.get('open_ports') or []
 
-    if not parsed.get('hosts'):
+    if hosts:
+        lines.append('HOSTS')
+        lines.append('-' * 60)
+        for h in hosts:
+            agent = 'yes' if h.get('agent_installed') else 'no'
+            lines.append(
+                f"{h.get('ip',''):<18} {h.get('hostname','') or '-':<24} "
+                f"state={h.get('state','')}  agent={agent}"
+            )
+        lines.append('')
+
+    if ports:
+        lines.append('OPEN PORTS')
+        lines.append('-' * 60)
+        lines.append(f"{'PORT':<10}{'PROTO':<8}{'STATE':<10}{'SERVICE':<18}{'VERSION'}")
+        for p_ in ports:
+            version = ' '.join(x for x in (p_.get('product'), p_.get('version')) if x)
+            lines.append(
+                f"{str(p_.get('port','')):<10}{p_.get('protocol',''):<8}"
+                f"{p_.get('state',''):<10}{p_.get('service','') or '-':<18}{version}"
+            )
+        lines.append('')
+
+    if not hosts and not ports:
         lines.append(d.get('result') or '(no data)')
 
     body = '\n'.join(lines) + '\n'
