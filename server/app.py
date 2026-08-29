@@ -560,7 +560,6 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen);
         CREATE INDEX IF NOT EXISTS idx_alerts_device ON alerts(device_id);
         CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
         CREATE INDEX IF NOT EXISTS idx_telemetry_device ON telemetry(device_id);
         CREATE INDEX IF NOT EXISTS idx_telemetry_updated ON telemetry(updated_at);
         CREATE INDEX IF NOT EXISTS idx_traffic_ts ON traffic_samples(ts);
@@ -585,6 +584,14 @@ def init_db():
     ensure_column('notifications', 'title', "TEXT DEFAULT ''")
     ensure_column('notifications', 'status', "TEXT DEFAULT 'open'")
     ensure_column('auth_attempts', 'source', "TEXT DEFAULT 'web'")
+
+    # Indexes on migrated columns must be created AFTER the ALTER TABLEs above.
+    # Creating idx_alerts_severity inside the executescript block crashed a fresh
+    # database with "no such column: severity".
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_ts ON notifications(timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_attempts_success ON auth_attempts(success)")
     conn.commit()
     conn.close()
     print("[DB] Database initialized at", DB_PATH)
