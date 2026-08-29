@@ -37,7 +37,7 @@ const Section: React.FC<{ delay?: number; className?: string; children: React.Re
 );
 
 const DashboardPage: React.FC = () => {
-  const { data, loading, scopeDeviceId } = useDashboard();
+  const { data, loading, error, scopeDeviceId } = useDashboard();
   const { devices } = useDevices();
   const [now, setNow] = useState(new Date());
   useEffect(() => {
@@ -55,9 +55,12 @@ const DashboardPage: React.FC = () => {
         <p className="text-[11px] font-orbitron text-slate-400 uppercase tracking-widest">Cannot reach intelligence engine</p>
         <p className="text-[10px] font-mono-data text-slate-600 mt-2">
           The command center is empty because <span className="text-slate-400">/api/dashboard</span> returned nothing.
-          Check: server running in engine mode (<span className="text-green-400">[ENGINE] dashboard_engine loaded</span> in boot log),
-          CORS enabled, and the browser can reach the API base.
+          Check that <span className="text-slate-400">python server/app.py</span> is running, that you are signed in
+          (the endpoint requires a session), and that the browser can reach the API base.
         </p>
+        {error && (
+          <p className="text-[10px] font-mono-data text-red-400/80 mt-2">{error}</p>
+        )}
       </div>
     );
   }
