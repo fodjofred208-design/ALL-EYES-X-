@@ -4,7 +4,7 @@ import { BellRing, X, Terminal, Download, Zap, ShieldAlert, Activity } from 'luc
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_BASE } from '../utils/api';
 
-interface SystemLog { id: string; type: string; message: string; timestamp: number }
+interface SystemLog { id: string; type: string; message: string; timestamp: number | string }
 
 const SEV_ICON: Record<string, ReactNode> = {
   connection: <Zap size={14} className="text-green-500" />,
@@ -14,6 +14,32 @@ const SEV_ICON: Record<string, ReactNode> = {
   warning: <ShieldAlert size={14} className="text-amber-400" />,
 };
 const DEFAULT_ICON = <ShieldAlert size={14} className="text-slate-400" />;
+
+const toMillis = (value: number | string): number => {
+  if (typeof value === 'number') return value < 1e12 ? value * 1000 : value;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+/** Render a log timestamp as a readable local time. Accepts unix seconds or ISO. */
+const formatStamp = (value: number | string): string => {
+  if (value == null || value === '') return '';
+  let ms: number;
+  if (typeof value === 'number') {
+    // backend stores unix seconds; guard against an already-ms value
+    ms = value < 1e12 ? value * 1000 : value;
+  } else {
+    const parsed = Date.parse(value);
+    if (Number.isNaN(parsed)) return String(value);
+    ms = parsed;
+  }
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString([], {
+    month: 'short', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+};
 
 const NotificationCenter = () => {
   const [isOpen, setIsOpen] = useState(false);
@@ -41,7 +67,7 @@ const NotificationCenter = () => {
           id: String(n.id ?? n.timestamp ?? `${n.timestamp}-${i}`),
           type: String(n.type ?? n.category ?? n.severity ?? 'connection').toLowerCase(),
           message: String(n.message ?? n.title ?? ''),
-          timestamp: Number(n.timestamp ?? n.created_at ?? Date.now() / 1000),
+          timestamp: (n.timestamp ?? n.created_at ?? Date.now() / 1000),
         }))
         .filter((l: SystemLog) => l.message.trim() !== '')
         .filter((l: SystemLog) => {
@@ -53,7 +79,7 @@ const NotificationCenter = () => {
 
       if (fresh.length === 0) return;
 
-      fresh.sort((a, b) => b.timestamp - a.timestamp); // newest first
+      fresh.sort((a, b) => toMillis(b.timestamp) - toMillis(a.timestamp)); // newest first
       const isFirstLoad = firstLoadRef.current;
       firstLoadRef.current = false;
 
@@ -151,7 +177,12 @@ const NotificationCenter = () => {
                   className="flex items-start gap-2 group"
                 >
                   <div className="mt-0.5 shrink-0">{icon(l.type)}</div>
-                  <p className="text-[10px] text-slate-400 leading-relaxed group-hover:text-green-300 transition-colors">{l.message}</p>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] text-slate-400 leading-relaxed group-hover:text-green-300 transition-colors">{l.message}</p>
+                    <p className="text-[8px] font-mono-data text-slate-600 mt-0.5 tabular-nums">
+                      {formatStamp(l.timestamp)}
+                    </p>
+                  </div>
                 </motion.div>
               ))}
             </div>

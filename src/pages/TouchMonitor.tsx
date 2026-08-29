@@ -36,8 +36,11 @@ const TouchMonitor = () => {
       }
     };
 
-    socket.on('touch_screen_frame', handleFrame);
-    return () => { socket.off('touch_screen_frame', handleFrame); };
+    // The server pushes remote screens as 'screenshare_frame'. This listener
+    // used to wait for 'touch_screen_frame', an event the backend never emits,
+    // so the mirror only ever updated through the slow HTTP fallback.
+    socket.on('screenshare_frame', handleFrame);
+    return () => { socket.off('screenshare_frame', handleFrame); };
   }, [socket, selectedDevice, isMirroring]);
 
   // Polling for remote screen
