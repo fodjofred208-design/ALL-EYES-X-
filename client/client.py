@@ -169,6 +169,8 @@ DIRTY_RECT_THRESHOLD = 0.005
 SCREENSHOT_QUALITY = 70
 WEBCAM_QUALITY = 65
 MAX_DIRTY_PERCENT = 0.6
+# Keep-alive full frame while the screen is static, so the stream never looks dead.
+FULL_FRAME_KEEPALIVE = float(os.environ.get('ALLEYESX_FULL_FRAME_KEEPALIVE', '1.0'))
 HARDWARE_REPORT_INTERVAL = 300  # Re-submit hardware every 5 minutes
 SECURITY_TELEMETRY_INTERVAL = 30  # refresh security telemetry every 30s
 
@@ -1583,9 +1585,10 @@ def api_request_raw(endpoint, data, method='POST'):
 _prev_frame_array = None
 _frame_width = 0
 _frame_height = 0
+_last_full_send = 0.0
 
 def capture_screenshot():
-    global _prev_frame_array, _frame_width, _frame_height
+    global _prev_frame_array, _frame_width, _frame_height, _last_full_send
     if not capability_profile().get('screenshot'):
         return None
     
@@ -1654,12 +1657,20 @@ def capture_screenshot():
                     else:
                         img_to_encode = Image.frombuffer('RGB', (current_w, current_h), img_array.tobytes())
                 else:
-                    return None
+                    # Screen is static. Going completely silent made the Live
+                    # Monitor read 3-4 FPS even though the pipe was healthy, and
+                    # a device switch looked frozen. Send a keep-alive full frame
+                    # every FULL_FRAME_KEEPALIVE seconds instead.
+                    if time.time() - _last_full_send < FULL_FRAME_KEEPALIVE:
+                        return None
+                    img_to_encode = Image.frombuffer('RGB', (current_w, current_h), img_array.tobytes())
             else:
                 img_to_encode = Image.frombuffer('RGB', (current_w, current_h), img_array.tobytes())
             
             _prev_frame_array = img_array.copy()
             _frame_width, _frame_height = current_w, current_h
+            if send_full:
+                _last_full_send = time.time()
             
             buffer = io.BytesIO()
             img_to_encode.save(buffer, format='JPEG', quality=SCREENSHOT_QUALITY, optimize=True)
@@ -2231,9 +2242,49 @@ class ALLEYESXClient:
             for task in pending_tasks:
                 self.handle_task(task)
 
+    def show_user_notice(self, message):
+        """Display a visible on-screen notice to the person at the machine."""
+        if not message:
+            return
+        print(f"[!] USER NOTICE: {message}")
+        kind = platform_kind()
+        try:
+            if kind == 'windows':
+                ps = (
+                    "Add-Type -AssemblyName System.Windows.Forms;"
+                    "[System.Windows.Forms.MessageBox]::Show("
+                    + repr(message) + ", 'ALL EYES X — Administrator Notice')"
+                )
+                threading.Thread(
+                    target=lambda: subprocess.run(
+                        ['powershell', '-NoProfile', '-Command', ps],
+                        capture_output=True, timeout=120,
+                    ),
+                    daemon=True,
+                ).start()
+                return
+            if kind in ('linux', 'macos'):
+                for cmd in (['notify-send', 'ALL EYES X', message],
+                            ['osascript', '-e', f'display notification "{message}" with title "ALL EYES X"']):
+                    if shutil.which(cmd[0]):
+                        threading.Thread(
+                            target=lambda c=cmd: subprocess.run(c, capture_output=True, timeout=30),
+                            daemon=True,
+                        ).start()
+                        return
+        except Exception as e:
+            print(f"[-] Could not display user notice: {e}")
+
     def handle_task(self, task):
         task_type = task.get('type', 'command')
         task_id = task.get('id', '')
+
+        if task_type == 'notify_user':
+            # Visible, non-blocking notice. The remote user is told the
+            # administrator has taken control - the session is never silent.
+            self.show_user_notice(task.get('message', ''))
+            return
+
         if task_type == 'nmap_scan':
             scan_type = task.get('scan_type', 'top_ports')
             target = task.get('target', '')
@@ -2263,22 +2314,37 @@ class ALLEYESXClient:
             print(f"[+] Command result sent ({len(result['result'])} bytes)")
 
     def send_hardware_inventory(self):
-        """Re-submit hardware inventory periodically (for live stats like CPU%).
-        Only sends processor and memory (lightweight), not full inventory."""
+        """Re-submit the FULL hardware inventory on an interval.
+
+        Previously this only sent processor + memory, so the Device Detail page
+        kept showing N/A for OS edition, GPU, storage, network interfaces and
+        peripherals even though the agent could read all of them. Sending the
+        whole inventory every HARDWARE_REPORT_INTERVAL seconds fills those
+        panels with real values and keeps live usage fresh.
+        """
         now = time.time()
         if now - self.last_hardware_report_time < HARDWARE_REPORT_INTERVAL:
             return
         self.last_hardware_report_time = now
-        
-        # Lightweight update — just CPU and memory usage
-        update = {
-            'processor': collect_processor_info(),
-            'memory': collect_memory_info(),
-        }
-        
+
+        try:
+            update = collect_hardware_inventory()
+        except Exception as e:
+            print(f"[-] Hardware inventory collection failed: {e}")
+            return
+
         result = api_request(f'/api/device/{self.device_id}/hardware', update)
         if result.get('success'):
-            print(f"[*] Hardware stats updated (CPU: {update['processor'].get('usage_percent', '?')}%, RAM: {update['memory'].get('usage_percent', '?')}%)")
+            proc = update.get('processor') or {}
+            mem = update.get('memory') or {}
+            print(
+                "[*] Hardware inventory refreshed "
+                f"(CPU {proc.get('usage_percent', '?')}%, RAM {mem.get('usage_percent', '?')}%, "
+                f"gpu={len(update.get('graphics') or [])}, disks={len(update.get('storage') or [])}, "
+                f"nics={len(update.get('network_interfaces') or [])})"
+            )
+        else:
+            print(f"[-] Hardware inventory rejected: {result.get('error', 'unknown')}")
 
     def poll_touch_events(self):
         now = time.time()

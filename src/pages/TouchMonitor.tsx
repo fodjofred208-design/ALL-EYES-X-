@@ -16,6 +16,11 @@ const TouchMonitor = () => {
   const [cursorPos, setCursorPos] = useState({ x: 0, y: 0 });
   const canvasRef = useRef<HTMLDivElement>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [showMoreFeature, setShowMoreFeature] = useState(false);
+  const [watched, setWatched] = useState<string[]>([]);
+  const [controlSession, setControlSession] = useState<string | null>(null);
+  const [notice, setNotice] = useState('');
 
   const onlineDevices = devices.filter(d => d.status === 'online');
 
@@ -45,16 +50,15 @@ const TouchMonitor = () => {
     } catch {}
   }, [selectedDevice, isMirroring]);
 
-  // Start/stop polling
+  // Start/stop polling — fallback only, never on top of the socket push.
   useEffect(() => {
-    if (isMirroring && selectedDevice) {
-      pollScreen();
-      pollingRef.current = setInterval(pollScreen, 100); // 10 FPS
-    }
+    if (!isMirroring || !selectedDevice || isConnected) return;
+    pollScreen();
+    pollingRef.current = setInterval(pollScreen, 100);
     return () => {
       if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
     };
-  }, [isMirroring, selectedDevice, pollScreen]);
+  }, [isMirroring, selectedDevice, pollScreen, isConnected]);
 
   // Get canvas-relative coordinates scaled to the remote screen
   const getScaledCoords = useCallback((clientX: number, clientY: number) => {
@@ -144,6 +148,50 @@ const TouchMonitor = () => {
     sendTouchEvent('up', 0, 0);
   }, [isMirroring, selectedDevice, sendTouchEvent]);
 
+  // Socket is the primary transport; polling only when the socket is down.
+  // Polling on top of the socket doubles the load and caps the frame rate.
+  const toggleWatched = (id: string) =>
+    setWatched(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  /** Announce and take control. The remote user is notified, not asked. */
+  const takeControl = async () => {
+    if (!selectedDevice) return;
+    setNotice('Announcing takeover…');
+    try {
+      const res = await fetch(`${API_BASE}/api/remote/takeover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ device_id: selectedDevice.id }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setControlSession(data.session_id);
+        setNotice(`Control taken. ${selectedDevice.hostname} was notified.`);
+      } else {
+        setNotice(data.error || 'Takeover failed');
+        setControlSession(null);
+      }
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'Takeover failed');
+      setControlSession(null);
+    }
+  };
+
+  const releaseControl = async () => {
+    if (!selectedDevice || !controlSession) return;
+    try {
+      await fetch(`${API_BASE}/api/remote/release`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ device_id: selectedDevice.id, session_id: controlSession }),
+      });
+    } catch { /* best effort */ }
+    setControlSession(null);
+    setNotice('Control released.');
+  };
+
   const toggleMirroring = () => {
     if (!selectedDevice) return;
     const newState = !isMirroring;
@@ -186,6 +234,19 @@ const TouchMonitor = () => {
             } disabled:opacity-30`}>
             <Zap size={14} /> {isMirroring ? 'ACTIVE' : 'CONNECT'}
           </button>
+
+          {/* Takeover: the remote user is NOTIFIED, not asked for consent. */}
+          {controlSession ? (
+            <button onClick={releaseControl}
+              className="px-4 py-2 rounded-xl text-xs font-orbitron font-bold bg-red-600/20 text-red-400 border border-red-500/40 hover:bg-red-600 hover:text-white transition-all flex items-center gap-2">
+              <RotateCcw size={14} /> RELEASE CONTROL
+            </button>
+          ) : (
+            <button onClick={takeControl} disabled={!selectedDevice}
+              className="px-4 py-2 rounded-xl text-xs font-orbitron font-bold bg-amber-600/20 text-amber-300 border border-amber-500/40 hover:bg-amber-600 hover:text-white transition-all flex items-center gap-2 disabled:opacity-30">
+              <MousePointer2 size={14} /> TAKE CONTROL
+            </button>
+          )}
 
           <div className="flex items-center gap-1 bg-black/40 border border-white/5 p-1 rounded-xl">
             <button onClick={() => setDeviceType('phone')}
@@ -283,8 +344,15 @@ const TouchMonitor = () => {
                   onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
 
                   {isMirroring && remoteScreen ? (
-                    /* REAL remote screen */
-                    <img src={remoteScreen} alt="Remote screen" className="w-full h-full object-contain select-none" draggable={false} />
+                    /* REAL remote screen — zoom is applied visually only, so the
+                       coordinate mapping sent to the agent stays unchanged. */
+                    <img
+                      src={remoteScreen}
+                      alt="Remote screen"
+                      className="w-full h-full object-contain select-none"
+                      style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}
+                      draggable={false}
+                    />
                   ) : isMirroring && !remoteScreen ? (
                     <div className="w-full h-full flex items-center justify-center bg-black">
                       <RefreshCw size={32} className="text-slate-700 animate-spin mx-auto mb-3" />
@@ -367,6 +435,87 @@ const TouchMonitor = () => {
             )}
           </AnimatePresence>
         </div>
+      </div>
+
+      {/* Takeover notice */}
+      {notice && (
+        <div className={`px-4 py-2.5 rounded-xl border text-[10px] font-mono-data ${
+          controlSession
+            ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+            : 'border-white/10 bg-white/5 text-slate-400'
+        }`}>
+          {notice}
+        </div>
+      )}
+
+      {/* Zoom */}
+      <div className="glass-card p-3 border-green-500/10 flex items-center justify-between">
+        <span className="text-[10px] font-orbitron uppercase tracking-[0.25em] text-slate-400">Zoom</span>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setZoom(z => Math.max(1, +(z - 0.25).toFixed(2)))}
+            className="w-7 h-7 rounded-lg border border-white/10 text-slate-300 hover:text-green-400 hover:border-green-500/40 text-sm font-bold">−</button>
+          <span className="text-[11px] font-mono-data text-green-400 w-12 text-center">{Math.round(zoom * 100)}%</span>
+          <button onClick={() => setZoom(z => Math.min(4, +(z + 0.25).toFixed(2)))}
+            className="w-7 h-7 rounded-lg border border-white/10 text-slate-300 hover:text-green-400 hover:border-green-500/40 text-sm font-bold">+</button>
+          <button onClick={() => setZoom(1)}
+            className="px-3 h-7 rounded-lg border border-white/10 text-[9px] font-orbitron text-slate-400 hover:text-green-400 uppercase">Fit</button>
+        </div>
+      </div>
+
+      {/* MORE FEATURE — multi-device wall */}
+      <div className="glass-card p-4 border-green-500/10">
+        <button onClick={() => setShowMoreFeature(v => !v)} className="w-full flex items-center justify-between">
+          <span className="flex items-center gap-2 text-[10px] font-orbitron uppercase tracking-[0.25em] text-green-400">
+            <Monitor size={14} /> More Feature — Multi-Device Control Wall
+          </span>
+          <span className="text-[9px] font-mono-data text-slate-500">
+            {watched.length} watching · {showMoreFeature ? 'hide' : 'open'}
+          </span>
+        </button>
+
+        {showMoreFeature && (
+          <div className="mt-4 space-y-3">
+            <div className="flex flex-wrap gap-2">
+              {onlineDevices.map(d => (
+                <button key={d.id} onClick={() => toggleWatched(d.id)}
+                  className={`px-3 py-1.5 rounded-lg border text-[9px] font-orbitron uppercase transition-all ${
+                    watched.includes(d.id)
+                      ? 'border-green-500/50 bg-green-500/10 text-green-300'
+                      : 'border-white/10 bg-white/5 text-slate-500 hover:text-slate-300'
+                  }`}>
+                  {watched.includes(d.id) ? '− ' : '+ '}{d.hostname}
+                </button>
+              ))}
+              {onlineDevices.length === 0 && (
+                <p className="text-[10px] font-mono-data text-slate-600">No online devices to add.</p>
+              )}
+            </div>
+
+            {watched.length === 0 ? (
+              <p className="text-[10px] font-mono-data text-slate-600 py-4 text-center">
+                Add devices above to build the control wall.
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                {watched.map(id => {
+                  const d = devices.find(x => x.id === id);
+                  return (
+                    <div key={id} className="rounded-xl border border-white/5 bg-black/40 overflow-hidden">
+                      <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
+                        <span className="text-[10px] font-orbitron text-slate-300 truncate">{d?.hostname ?? id.slice(0, 8)}</span>
+                        <button onClick={() => setSelectedDeviceId(id)}
+                          className="text-[8px] font-orbitron text-green-400 hover:text-green-300 uppercase">Focus</button>
+                      </div>
+                      <img src={`${API_BASE}/api/screenshot/${id}/latest`} alt={`${d?.hostname ?? id} preview`}
+                        className="w-full h-28 object-contain bg-black"
+                        onError={(e) => { (e.currentTarget as HTMLImageElement).style.opacity = '0.15'; }} />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

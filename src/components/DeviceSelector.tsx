@@ -1,5 +1,6 @@
 import { useDevices } from '../context/DeviceContext';
-import { Monitor, ChevronDown, Cpu, Smartphone, Globe, Wifi } from 'lucide-react';
+import { Monitor, ChevronDown, Globe, Wifi } from 'lucide-react';
+import DeviceIcon from './DeviceIcon';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useState } from 'react';
 
@@ -24,7 +25,14 @@ const DeviceSelector = () => {
       >
         <div className={`p-1.5 rounded-lg ${selectedDevice ? 'bg-green-500/10 text-green-500' : 'bg-cyan-500/10 text-cyan-400'}`}>
            {selectedDevice
-             ? ((selectedDevice.os || selectedDevice.os_name || '').includes('Android') ? <Smartphone size={16} /> : <Monitor size={16} />)
+             ? (
+               <DeviceIcon
+                 hostname={selectedDevice.hostname}
+                 os={selectedDevice.os || selectedDevice.os_name || ''}
+                 size={16}
+                 online={selectedDevice.status === 'online'}
+               />
+             )
              : <Globe size={16} />}
         </div>
         <div className="text-left">
@@ -82,7 +90,12 @@ const DeviceSelector = () => {
                         className={`w-full p-3 flex items-center gap-3 hover:bg-green-500/10 transition-all text-left border-b border-white/5 last:border-0 ${selectedDevice?.id === device.id ? 'bg-green-500/5' : ''}`}
                       >
                          <div className={`p-1.5 rounded-lg ${online ? 'bg-green-500/10 text-green-500' : 'bg-slate-500/10 text-slate-500'}`}>
-                            {(device.os || device.os_name || '').includes('Android') ? <Smartphone size={14} /> : <Cpu size={14} />}
+                            <DeviceIcon
+                              hostname={device.hostname}
+                              os={device.os || device.os_name || ''}
+                              size={14}
+                              online={online}
+                            />
                          </div>
                          <div className="flex-1 min-w-0">
                             <p className="text-xs font-bold text-white truncate">{device.hostname}</p>

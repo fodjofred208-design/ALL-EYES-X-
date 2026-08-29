@@ -27,7 +27,14 @@ const LiveMonitor = () => {
     fps: 0, latency: 0, frameSize: 0, totalPixels: 0, changedPixels: 0
   });
   const [connectionQuality, setConnectionQuality] = useState<'excellent' | 'good' | 'average' | 'poor'>('excellent');
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [showMoreFeature, setShowMoreFeature] = useState(false);
+  const [watched, setWatched] = useState<string[]>([]);
+  const [showDataCheck, setShowDataCheck] = useState(false);
+  const [serverStats, setServerStats] = useState<any>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const dragRef = useRef<{ x: number; y: number } | null>(null);
 
   const frameCountRef = useRef(0);
   const lastFpsTimeRef = useRef(Date.now());
@@ -170,14 +177,31 @@ const LiveMonitor = () => {
     };
   }, [socket, selectedDevice, isLive, renderFrame]);
 
-  // HTTP polling fallback
+  // Clear the canvas whenever the target changes, otherwise the previous
+  // device's last frame stays on screen and looks like a frozen stream.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const off = offscreenCanvasRef.current;
+    const offCtx = offscreenCtxRef.current;
+    if (off && offCtx) offCtx.clearRect(0, 0, off.width, off.height);
+    frameCountRef.current = 0;
+    setMetrics({ fps: 0, latency: 0, frameSize: 0, totalPixels: 0, changedPixels: 0 });
+  }, [selectedDevice?.id]);
+
+  // HTTP polling is a FALLBACK only. Socket.IO already pushes every frame the
+  // agent uploads; polling on top of it doubles the load and starves the
+  // stream, which is what pinned the display at ~4 FPS.
+  const inFlightRef = useRef(false);
+
   const pollFrame = useCallback(async () => {
     if (!selectedDevice || !isLive) return;
+    if (inFlightRef.current) return;   // never stack overlapping requests
+    inFlightRef.current = true;
 
     try {
-      const startTime = Date.now();
       const res = await fetch(`${API_BASE}/api/screenshot/${selectedDevice.id}`);
-
       if (res.ok) {
         const data = await res.json();
         if (data.image) {
@@ -191,21 +215,23 @@ const LiveMonitor = () => {
       }
     } catch {
       // Silent
+    } finally {
+      inFlightRef.current = false;
     }
   }, [selectedDevice, isLive, renderFrame]);
 
-  // Start/stop polling
   useEffect(() => {
-    if (isLive && selectedDevice) {
-      pollFrame();
-      const adaptiveMs = {
-        excellent: 16, // up to ~60 FPS on high-performance connections
-        good: 20,
-        average: 25,  // ~40 FPS
-        poor: 33,     // low-performance target: ~30 FPS
-      }[connectionQuality];
-      pollingRef.current = setInterval(pollFrame, adaptiveMs);
-    }
+    // Socket connected: frames arrive by push, no polling needed.
+    if (!isLive || !selectedDevice || isConnected) return;
+
+    pollFrame();
+    const adaptiveMs = {
+      excellent: 33,  // ~30 FPS ceiling for HTTP polling
+      good: 40,
+      average: 50,
+      poor: 66,
+    }[connectionQuality];
+    pollingRef.current = setInterval(pollFrame, adaptiveMs);
 
     return () => {
       if (pollingRef.current) {
@@ -213,7 +239,27 @@ const LiveMonitor = () => {
         pollingRef.current = null;
       }
     };
-  }, [isLive, selectedDevice, pollFrame, connectionQuality]);
+  }, [isLive, selectedDevice, pollFrame, connectionQuality, isConnected]);
+
+  // Real server-measured stream statistics for the Data Check panel.
+  useEffect(() => {
+    if (!selectedDevice || !showDataCheck) return;
+    let stop = false;
+    const load = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/stream/stats/${selectedDevice.id}`);
+        if (res.ok && !stop) setServerStats(await res.json());
+      } catch { /* keep last known stats */ }
+    };
+    load();
+    const t = setInterval(load, 2000);
+    return () => { stop = true; clearInterval(t); };
+  }, [selectedDevice, showDataCheck]);
+
+  const resetView = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+
+  const toggleWatched = (id: string) =>
+    setWatched(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
   const toggleLive = () => {
     if (!selectedDevice) return;
@@ -437,10 +483,44 @@ const LiveMonitor = () => {
                   className="absolute inset-0"
                 >
                   {/* REAL CANVAS — renders the remote screen */}
-                  <canvas
-                    ref={canvasRef}
-                    className="w-full h-full object-contain bg-black"
-                  />
+                  <div
+                    className="w-full h-full overflow-hidden bg-black"
+                    onMouseDown={(e) => { if (zoom > 1) dragRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y }; }}
+                    onMouseMove={(e) => {
+                      if (dragRef.current) setPan({ x: e.clientX - dragRef.current.x, y: e.clientY - dragRef.current.y });
+                    }}
+                    onMouseUp={() => { dragRef.current = null; }}
+                    onMouseLeave={() => { dragRef.current = null; }}
+                  >
+                    <canvas
+                      ref={canvasRef}
+                      className="w-full h-full object-contain"
+                      style={{
+                        transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                        transformOrigin: 'center center',
+                        cursor: zoom > 1 ? 'grab' : 'default',
+                      }}
+                    />
+                  </div>
+
+                  {/* Zoom controls */}
+                  <div className="absolute top-4 right-4 flex items-center gap-1 bg-black/70 px-2 py-1.5 rounded-lg border border-white/10">
+                    <button
+                      onClick={() => setZoom(z => Math.max(1, +(z - 0.25).toFixed(2)))}
+                      className="w-6 h-6 rounded text-slate-300 hover:text-green-400 hover:bg-white/5 text-sm font-bold"
+                      title="Zoom out"
+                    >−</button>
+                    <span className="text-[9px] font-mono-data text-slate-400 w-10 text-center">{Math.round(zoom * 100)}%</span>
+                    <button
+                      onClick={() => setZoom(z => Math.min(4, +(z + 0.25).toFixed(2)))}
+                      className="w-6 h-6 rounded text-slate-300 hover:text-green-400 hover:bg-white/5 text-sm font-bold"
+                      title="Zoom in"
+                    >+</button>
+                    <button
+                      onClick={resetView}
+                      className="ml-1 px-2 h-6 rounded text-[8px] font-orbitron text-slate-400 hover:text-green-400 hover:bg-white/5 uppercase"
+                    >Fit</button>
+                  </div>
 
                   {/* Top-left overlay */}
                   <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/60 px-3 py-1.5 rounded-lg border border-white/5">
@@ -548,9 +628,116 @@ const LiveMonitor = () => {
               </p>
             </div>
             <div className="glass-card p-3 border-green-500/10">
-              <p className="text-[8px] font-orbitron text-slate-500 uppercase tracking-widest">Encryption</p>
-              <p className="text-xs font-mono-data font-bold mt-1 text-green-500">AES-256</p>
+              <p className="text-[8px] font-orbitron text-slate-500 uppercase tracking-widest">Transport</p>
+              <p className="text-xs font-mono-data font-bold mt-1 text-green-500">
+                {serverStats?.transport?.toUpperCase() ?? (isConnected ? 'SOCKET.IO' : 'HTTP')}
+              </p>
             </div>
+          </div>
+
+          {/* ---------- MORE FEATURE — multi-device wall ---------- */}
+          <div className="glass-card p-4 border-green-500/10">
+            <button
+              onClick={() => setShowMoreFeature(v => !v)}
+              className="w-full flex items-center justify-between"
+            >
+              <span className="flex items-center gap-2 text-[10px] font-orbitron uppercase tracking-[0.25em] text-green-400">
+                <Monitor size={14} /> More Feature — Multi-Device Wall
+              </span>
+              <span className="text-[9px] font-mono-data text-slate-500">
+                {watched.length} watching · {showMoreFeature ? 'hide' : 'open'}
+              </span>
+            </button>
+
+            {showMoreFeature && (
+              <div className="mt-4 space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  {onlineDevices.map(d => (
+                    <button
+                      key={d.id}
+                      onClick={() => toggleWatched(d.id)}
+                      className={`px-3 py-1.5 rounded-lg border text-[9px] font-orbitron uppercase transition-all ${
+                        watched.includes(d.id)
+                          ? 'border-green-500/50 bg-green-500/10 text-green-300'
+                          : 'border-white/10 bg-white/5 text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      {watched.includes(d.id) ? '− ' : '+ '}{d.hostname}
+                    </button>
+                  ))}
+                  {onlineDevices.length === 0 && (
+                    <p className="text-[10px] font-mono-data text-slate-600">No online devices to add.</p>
+                  )}
+                </div>
+
+                {watched.length === 0 ? (
+                  <p className="text-[10px] font-mono-data text-slate-600 py-4 text-center">
+                    Add devices above to build the monitoring wall.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                    {watched.map(id => {
+                      const d = devices.find(x => x.id === id);
+                      return (
+                        <div key={id} className="rounded-xl border border-white/5 bg-black/40 overflow-hidden">
+                          <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
+                            <span className="text-[10px] font-orbitron text-slate-300 truncate">{d?.hostname ?? id.slice(0, 8)}</span>
+                            <button
+                              onClick={() => { setSelectedDeviceId(id); }}
+                              className="text-[8px] font-orbitron text-green-400 hover:text-green-300 uppercase"
+                            >
+                              Focus
+                            </button>
+                          </div>
+                          <img
+                            src={`${API_BASE}/api/screenshot/${id}/latest`}
+                            alt={`${d?.hostname ?? id} preview`}
+                            className="w-full h-28 object-contain bg-black"
+                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.opacity = '0.15'; }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ---------- DATA CHECK ---------- */}
+          <div className="glass-card p-4 border-green-500/10">
+            <button
+              onClick={() => setShowDataCheck(v => !v)}
+              className="w-full flex items-center justify-between"
+            >
+              <span className="flex items-center gap-2 text-[10px] font-orbitron uppercase tracking-[0.25em] text-cyan-300">
+                <Activity size={14} /> Data Check — measured stream statistics
+              </span>
+              <span className="text-[9px] font-mono-data text-slate-500">{showDataCheck ? 'hide' : 'open'}</span>
+            </button>
+
+            {showDataCheck && (
+              <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { l: 'Frame Rate', v: serverStats?.screen?.fps != null ? `${serverStats.screen.fps} fps` : '—' },
+                  { l: 'Latency', v: metrics.latency ? `${metrics.latency} ms` : '—' },
+                  { l: 'Frame Size', v: serverStats?.screen?.frame_kb ? `${serverStats.screen.frame_kb} KB` : `${metrics.frameSize} KB` },
+                  { l: 'Changed Pixels', v: metrics.totalPixels ? `${Math.round((metrics.changedPixels / metrics.totalPixels) * 100)}%` : '—' },
+                  { l: 'Resolution', v: metrics.totalPixels ? `${canvasRef.current?.width ?? '—'}×${canvasRef.current?.height ?? '—'}` : '—' },
+                  { l: 'Encoding', v: serverStats?.encoding ?? 'JPEG dirty-rect' },
+                  { l: 'Transport', v: serverStats?.transport ?? (isConnected ? 'socket.io' : 'http') },
+                  { l: 'Last Frame', v: serverStats?.screen?.last_frame_age_s != null ? `${serverStats.screen.last_frame_age_s}s ago` : '—' },
+                ].map(x => (
+                  <div key={x.l} className="p-2.5 rounded-lg bg-white/[0.04] border border-white/5">
+                    <p className="text-[8px] font-orbitron text-slate-500 uppercase tracking-widest">{x.l}</p>
+                    <p className="text-[12px] font-mono-data text-slate-200 mt-1 truncate">{x.v}</p>
+                  </div>
+                ))}
+                <p className="col-span-2 md:col-span-4 text-[9px] font-mono-data text-slate-600">
+                  Values marked — are not measurable yet. Nothing here is simulated.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>

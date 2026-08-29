@@ -14,6 +14,7 @@ interface DetailData {
   network_interfaces: Array<Record<string, unknown>>;
   peripherals: Array<Record<string, unknown>>;
   preferences: Record<string, string>;
+  telemetry?: Record<string, unknown>;
 }
 
 const DeviceDetail: React.FC = () => {
@@ -38,6 +39,15 @@ const DeviceDetail: React.FC = () => {
       })
       .then(j => { setData(j); setLoading(false); })
       .catch(e => { setError(e.message); setLoading(false); });
+
+    // Live telemetry changes on every heartbeat, so keep the panel fresh.
+    const t = setInterval(() => {
+      fetch(`${window.location.origin}/api/device/${id}/detail`, { credentials: 'include' })
+        .then(r => (r.ok ? r.json() : null))
+        .then(j => { if (j) setData(j); })
+        .catch(() => { /* keep last good data */ });
+    }, 5000);
+    return () => clearInterval(t);
   }, [id]);
 
   if (loading) {
@@ -71,7 +81,7 @@ const DeviceDetail: React.FC = () => {
 
   if (!data) return null;
 
-  const { device, operating_system, processor, memory, graphics, storage, network_interfaces, peripherals } = data;
+  const { device, operating_system, processor, memory, graphics, storage, network_interfaces, peripherals, telemetry } = data;
   const isOnline = device?.status === 'online';
 
   const Field: React.FC<{ label: string; value: string | number | null | undefined; mono?: boolean }> = ({ label, value, mono }) => (
@@ -250,6 +260,72 @@ const DeviceDetail: React.FC = () => {
                 <Field label="Speed" value={String(net.speed || '')} />
               </div>
             ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Live telemetry — real values from the heartbeat table */}
+      <Card title="Live Telemetry & Security">
+        {!telemetry || telemetry.updated_at == null ? (
+          <p className="text-xs text-slate-600 italic">
+            No telemetry reported yet — waiting for the agent's next heartbeat.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {[
+                { l: 'CPU Usage', v: telemetry.cpu },
+                { l: 'RAM Usage', v: telemetry.ram },
+                { l: 'Disk Usage', v: telemetry.disk },
+              ].map(m => {
+                const pct = Number(m.v ?? 0);
+                return (
+                  <div key={m.l} className="p-3 rounded-lg bg-slate-900/40 border border-slate-700/20">
+                    <div className="flex justify-between items-baseline">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-500">{m.l}</span>
+                      <span className="text-sm font-mono text-green-400">{m.v == null ? 'N/A' : `${Math.round(pct)}%`}</span>
+                    </div>
+                    <div className="mt-2 h-1.5 bg-slate-700/30 rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-green-500 transition-all duration-700"
+                        style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+              <Field label="Firewall" value={
+                telemetry.firewall === 1 ? 'Enabled' : telemetry.firewall === 0 ? 'Disabled' : 'Not reported'
+              } />
+              <Field label="Antivirus" value={
+                telemetry.antivirus === 1 ? 'Active' : telemetry.antivirus === 0 ? 'Inactive' : 'Not reported'
+              } />
+              <Field label="Logged User" value={telemetry.logged_user as string} />
+              <Field label="Boot Time" value={telemetry.boot_time as string} />
+              <Field label="GPU Summary" value={telemetry.gpu as string} />
+              <Field label="Wi-Fi" value={
+                telemetry.wifi ? JSON.stringify(telemetry.wifi) : ''
+              } mono />
+              <Field label="Battery" value={
+                telemetry.battery == null || Number(telemetry.battery) < 0 ? '' : `${telemetry.battery}%`
+              } />
+              <Field label="Net Sent" value={
+                telemetry.net_sent == null ? '' : `${(Number(telemetry.net_sent) / 1048576).toFixed(1)} MB`
+              } mono />
+              <Field label="Net Received" value={
+                telemetry.net_recv == null ? '' : `${(Number(telemetry.net_recv) / 1048576).toFixed(1)} MB`
+              } mono />
+              <Field label="Malware Detected" value={telemetry.malware_detected ? 'YES' : 'No'} />
+              <Field label="Open Ports" value={
+                Array.isArray(telemetry.open_ports) && telemetry.open_ports.length
+                  ? telemetry.open_ports.join(', ')
+                  : 'None reported'
+              } mono />
+              <Field label="Last Heartbeat" value={telemetry.updated_at as string} mono />
+            </div>
           </div>
         )}
       </Card>

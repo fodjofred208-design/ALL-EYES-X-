@@ -17,6 +17,8 @@ const Webcam = () => {
   const [recordedChunks, setRecordedChunks] = useState<Blob[]>([]);
   const [streamQuality, setStreamQuality] = useState<'smooth' | 'balanced' | 'quality'>('balanced');
   const [canvasSize, setCanvasSize] = useState({ w: 640, h: 480 });
+  const [showMoreFeature, setShowMoreFeature] = useState(false);
+  const [watched, setWatched] = useState<string[]>([]);
 
   const frameCountRef = useRef(0);
   const lastFpsTimeRef = useRef(Date.now());
@@ -384,6 +386,72 @@ const Webcam = () => {
                 {isConnected ? 'WEBSOCKET' : 'HTTP POLL'}
               </p>
             </div>
+          </div>
+
+          {/* MORE FEATURE — multi-camera wall */}
+          <div className="glass-card p-4 border-green-500/10">
+            <button onClick={() => setShowMoreFeature(v => !v)} className="w-full flex items-center justify-between">
+              <span className="flex items-center gap-2 text-[10px] font-orbitron uppercase tracking-[0.25em] text-green-400">
+                <Camera size={14} /> More Feature — Multi-Camera Wall
+              </span>
+              <span className="text-[9px] font-mono-data text-slate-500">
+                {watched.length} watching · {showMoreFeature ? 'hide' : 'open'}
+              </span>
+            </button>
+
+            {showMoreFeature && (
+              <div className="mt-4 space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  {onlineDevices.map(d => (
+                    <button
+                      key={d.id}
+                      onClick={() => setWatched(prev => prev.includes(d.id) ? prev.filter(x => x !== d.id) : [...prev, d.id])}
+                      className={`px-3 py-1.5 rounded-lg border text-[9px] font-orbitron uppercase transition-all ${
+                        watched.includes(d.id)
+                          ? 'border-green-500/50 bg-green-500/10 text-green-300'
+                          : 'border-white/10 bg-white/5 text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      {watched.includes(d.id) ? '− ' : '+ '}{d.hostname}
+                    </button>
+                  ))}
+                  {onlineDevices.length === 0 && (
+                    <p className="text-[10px] font-mono-data text-slate-600">No online devices to add.</p>
+                  )}
+                </div>
+
+                {watched.length === 0 ? (
+                  <p className="text-[10px] font-mono-data text-slate-600 py-4 text-center">
+                    Add devices above to build the camera wall.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                    {watched.map(id => {
+                      const d = devices.find(x => x.id === id);
+                      return (
+                        <div key={id} className="rounded-xl border border-white/5 bg-black/40 overflow-hidden">
+                          <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
+                            <span className="text-[10px] font-orbitron text-slate-300 truncate">{d?.hostname ?? id.slice(0, 8)}</span>
+                            <button
+                              onClick={() => setSelectedDeviceId(id)}
+                              className="text-[8px] font-orbitron text-green-400 hover:text-green-300 uppercase"
+                            >
+                              Focus
+                            </button>
+                          </div>
+                          <img
+                            src={`${API_BASE}/api/webcam/${id}/latest`}
+                            alt={`${d?.hostname ?? id} camera`}
+                            className="w-full h-28 object-contain bg-black"
+                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.opacity = '0.15'; }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="glass-card p-6 border-green-500/10">

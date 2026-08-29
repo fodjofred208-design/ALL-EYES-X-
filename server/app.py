@@ -36,7 +36,7 @@ DATABASE_PATH = os.path.join(BASE_DIR, "aeyes_data.db")
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, deque
 from flask import (
     Flask, render_template, request, jsonify, session,
     redirect, url_for, send_file, Response, send_from_directory
@@ -521,6 +521,20 @@ def init_db():
             error TEXT DEFAULT ''
         );
 
+        CREATE TABLE IF NOT EXISTS remote_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT UNIQUE NOT NULL,
+            device_id TEXT NOT NULL,
+            started_by TEXT DEFAULT '',
+            started_at TEXT DEFAULT '',
+            ended_at TEXT DEFAULT '',
+            mode TEXT DEFAULT 'control',
+            notified INTEGER DEFAULT 0,
+            note TEXT DEFAULT ''
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_remote_sessions_device ON remote_sessions(device_id);
+
         CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT DEFAULT '',
@@ -948,6 +962,11 @@ touch_event_queues = defaultdict(list)
 touch_event_counter = 0
 latest_screenshots = {}
 latest_webcam_frames = {}
+# Per-frame metadata, kept in memory only (see note in api_screenshot).
+latest_screenshot_meta = {}
+latest_webcam_meta = {}
+# Rolling frame counters used to report REAL server-measured stream rates.
+_stream_frames = defaultdict(lambda: deque(maxlen=120))
 
 # ============================================================
 # AUTH DECORATOR
@@ -2789,6 +2808,91 @@ def api_command_results():
     return jsonify({'results': [dict(r) for r in rows]}), 200
 
 
+@app.route('/api/remote/takeover', methods=['POST'])
+@login_required
+def api_remote_takeover():
+    """Administrator announces and takes control.
+
+    Per the product decision the remote user does NOT approve the session: the
+    agent is told to display a visible notice while the administrator works.
+    Every takeover is audited so the action is never silent or deniable.
+    """
+    try:
+        data = request.get_json(force=True) or {}
+        device_id = data.get('device_id', '')
+        note = str(data.get('note', ''))[:300]
+
+        if device_id not in connected_devices:
+            return jsonify({'error': 'Device not found'}), 404
+
+        actor = session.get('user', 'unknown-admin')
+        hostname = connected_devices[device_id].get('hostname', device_id[:8])
+        session_id = str(uuid.uuid4())
+        now_iso = datetime.now().isoformat()
+
+        message = note or 'An ALL EYES X administrator has taken temporary control of this device.'
+
+        # Visible notice on the remote machine (best effort, queued as a task).
+        pending_tasks_queue.setdefault(device_id, []).append({
+            'id': str(uuid.uuid4()),
+            'type': 'notify_user',
+            'message': message,
+            'timestamp': now_iso,
+        })
+
+        conn = get_db()
+        conn.execute("""
+            INSERT INTO remote_sessions
+            (session_id, device_id, started_by, started_at, mode, notified, note)
+            VALUES (?,?,?,?,?,?,?)
+        """, (session_id, device_id, actor, now_iso, 'control', 1, message))
+        conn.commit()
+        conn.close()
+
+        audit_event(actor, device_id, 'remote_takeover', 'started', message)
+        activity('REMOTE TAKEOVER', device_id=device_id[:8], host=hostname, by=actor)
+        add_notification('security', f'REMOTE CONTROL: {actor} took control of {hostname}')
+        socketio.emit('remote_takeover', {
+            'session_id': session_id, 'device_id': device_id, 'by': actor, 'message': message,
+        })
+
+        return jsonify({'success': True, 'session_id': session_id, 'message': message}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/remote/release', methods=['POST'])
+@login_required
+def api_remote_release():
+    try:
+        data = request.get_json(force=True) or {}
+        session_id = data.get('session_id', '')
+        device_id = data.get('device_id', '')
+        actor = session.get('user', 'unknown-admin')
+
+        conn = get_db()
+        conn.execute(
+            "UPDATE remote_sessions SET ended_at=? WHERE session_id=?",
+            (datetime.now().isoformat(), session_id),
+        )
+        conn.commit()
+        conn.close()
+
+        pending_tasks_queue.setdefault(device_id, []).append({
+            'id': str(uuid.uuid4()),
+            'type': 'notify_user',
+            'message': 'The administrator has released control of this device.',
+            'timestamp': datetime.now().isoformat(),
+        })
+
+        audit_event(actor, device_id, 'remote_takeover', 'released', session_id)
+        activity('REMOTE RELEASE', device_id=device_id[:8], by=actor)
+        socketio.emit('remote_release', {'session_id': session_id, 'device_id': device_id})
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
 # ============================================================
 # TOUCH EVENT QUEUE
 # ============================================================
@@ -2863,16 +2967,20 @@ def api_screenshot(device_id):
             
             image_b64 = data['image']
             latest_screenshots[device_id] = image_b64
-            
-            conn = get_db()
-            conn.execute("DELETE FROM screenshots WHERE device_id=?", (device_id,))
-            conn.execute(
-                "INSERT INTO screenshots (device_id, image_data, timestamp) VALUES (?,?,?)",
-                (device_id, image_b64, datetime.now().isoformat())
-            )
-            conn.commit()
-            conn.close()
-            
+            _now = time.time()
+            latest_screenshot_meta[device_id] = {
+                'ts': _now,
+                'bytes': len(image_b64),
+                'full_frame': bool(data.get('full_frame', True)),
+            }
+            _stream_frames[('screen', device_id)].append(_now)
+
+            # NOTE: frames are deliberately NOT written to SQLite. A 300 KB blob
+            # per frame at 30-60 FPS means 30-60 large DELETE+INSERT pairs every
+            # second, which saturates the disk on a modest Windows 10 machine and
+            # is the main reason the stream collapsed to ~4 FPS. Live frames are
+            # ephemeral; only the newest one per device is kept in memory.
+
             socketio.emit('screenshare_frame', {
                 'device_id': device_id,
                 'image': image_b64,
@@ -2895,6 +3003,67 @@ def api_screenshot(device_id):
         return jsonify({'error': 'No screenshot available'}), 404
 
 
+def _measure_fps(kind, device_id):
+    """Real frames-per-second measured from arrival timestamps."""
+    stamps = list(_stream_frames.get((kind, device_id), []))
+    if len(stamps) < 2:
+        return 0.0
+    window = stamps[-1] - stamps[0]
+    if window <= 0:
+        return 0.0
+    return round((len(stamps) - 1) / window, 1)
+
+
+@app.route('/api/stream/stats/<device_id>', methods=['GET'])
+def api_stream_stats(device_id):
+    """Real, measured stream statistics for the Data Check panel."""
+    screen_meta = latest_screenshot_meta.get(device_id) or {}
+    cam_meta = latest_webcam_meta.get(device_id) or {}
+    now = time.time()
+
+    screen_age = (now - screen_meta['ts']) if screen_meta.get('ts') else None
+    cam_age = (now - cam_meta['ts']) if cam_meta.get('ts') else None
+
+    return jsonify({
+        'device_id': device_id,
+        'screen': {
+            'active': screen_age is not None and screen_age < 10,
+            'fps': _measure_fps('screen', device_id),
+            'last_frame_age_s': round(screen_age, 2) if screen_age is not None else None,
+            'frame_kb': round(screen_meta.get('bytes', 0) * 0.75 / 1024, 1),
+            'full_frame': screen_meta.get('full_frame'),
+        },
+        'webcam': {
+            'active': cam_age is not None and cam_age < 10,
+            'fps': _measure_fps('cam', device_id),
+            'last_frame_age_s': round(cam_age, 2) if cam_age is not None else None,
+            'frame_kb': round(cam_meta.get('bytes', 0) * 0.75 / 1024, 1),
+        },
+        'transport': 'socket.io' if device_id in connected_clients_sid else 'http',
+        'encoding': 'JPEG (change-aware dirty rectangles)',
+        'encryption': 'TLS when served over https via Caddy',
+    }), 200
+
+
+@app.route('/api/screenshot/<device_id>/latest', methods=['GET'])
+def api_screenshot_latest(device_id):
+    """Raw JPEG of the newest stored frame, for the multi-device wall.
+
+    Returns an image directly so it can be used as an <img> source without
+    base64-decoding in the browser.
+    """
+    b64 = latest_screenshots.get(device_id)
+    if not b64:
+        return jsonify({'error': 'No screenshot available'}), 404
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        return jsonify({'error': 'Corrupt frame'}), 500
+    return Response(raw, mimetype='image/jpeg', headers={
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+    })
+
+
 # ============================================================
 # WEBCAM STREAMING
 # ============================================================
@@ -2908,16 +3077,15 @@ def api_webcam(device_id):
             
             image_b64 = data['image']
             latest_webcam_frames[device_id] = image_b64
-            
-            conn = get_db()
-            conn.execute("DELETE FROM webcam_frames WHERE device_id=?", (device_id,))
-            conn.execute(
-                "INSERT INTO webcam_frames (device_id, image_data, timestamp) VALUES (?,?,?)",
-                (device_id, image_b64, datetime.now().isoformat())
-            )
-            conn.commit()
-            conn.close()
-            
+            _now = time.time()
+            latest_webcam_meta[device_id] = {
+                'ts': _now,
+                'bytes': len(image_b64),
+            }
+            _stream_frames[('cam', device_id)].append(_now)
+
+            # Same reason as screenshots: no per-frame database writes.
+
             socketio.emit('webcam_frame', {
                 'device_id': device_id,
                 'image': image_b64,
@@ -2931,6 +3099,21 @@ def api_webcam(device_id):
         if device_id in latest_webcam_frames:
             return jsonify({'image': latest_webcam_frames[device_id], 'device_id': device_id}), 200
         return jsonify({'error': 'No webcam frame available'}), 404
+
+
+@app.route('/api/webcam/<device_id>/latest', methods=['GET'])
+def api_webcam_latest(device_id):
+    """Raw JPEG of the newest webcam frame, for the multi-camera wall."""
+    b64 = latest_webcam_frames.get(device_id)
+    if not b64:
+        return jsonify({'error': 'No webcam frame available'}), 404
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        return jsonify({'error': 'Corrupt frame'}), 500
+    return Response(raw, mimetype='image/jpeg', headers={
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+    })
 
 
 @app.route('/api/webcam/<device_id>/start', methods=['POST'])
@@ -3037,6 +3220,16 @@ def api_device_detail_full(device_id):
     
     peri_rows = conn.execute("SELECT * FROM peripherals WHERE device_id=?", (device_id,)).fetchall()
     peri_data = [dict(r) for r in peri_rows]
+
+    # Live security telemetry straight from the heartbeat table. This is what
+    # fills the "usage / firewall / open ports" fields that used to read N/A.
+    tel_row = conn.execute("SELECT * FROM telemetry WHERE device_id=?", (device_id,)).fetchone()
+    tel_data = dict(tel_row) if tel_row else {}
+
+    try:
+        open_ports = json.loads(tel_data.get('open_ports') or '[]')
+    except Exception:
+        open_ports = []
     
     pref_rows = conn.execute("SELECT preference_key, preference_value FROM device_preferences WHERE device_id=?", (device_id,)).fetchall()
     pref_data = {r['preference_key']: r['preference_value'] for r in pref_rows}
@@ -3141,6 +3334,23 @@ def api_device_detail_full(device_id):
         'network_interfaces': net_data,
         'peripherals': peri_data,
         'preferences': pref_data,
+        'telemetry': {
+            'cpu': tel_data.get('cpu'),
+            'ram': tel_data.get('ram'),
+            'disk': tel_data.get('disk'),
+            'net_sent': tel_data.get('net_sent'),
+            'net_recv': tel_data.get('net_recv'),
+            'firewall': tel_data.get('firewall'),
+            'antivirus': tel_data.get('antivirus'),
+            'open_ports': open_ports,
+            'logged_user': tel_data.get('logged_user'),
+            'boot_time': tel_data.get('boot_time'),
+            'gpu': tel_data.get('gpu'),
+            'wifi': tel_data.get('wifi'),
+            'battery': tel_data.get('battery'),
+            'malware_detected': tel_data.get('malware_detected'),
+            'updated_at': tel_data.get('updated_at'),
+        },
     }), 200
 
 
@@ -3301,6 +3511,9 @@ def api_device_hardware_update(device_id):
         if gpu_list:
             conn.execute("DELETE FROM gpu_info WHERE device_id=?", (device_id,))
             for gpu in gpu_list:
+                vram = gpu.get('dedicated_memory')
+                if vram in (None, '') and gpu.get('vram_gb') is not None:
+                    vram = f"{gpu.get('vram_gb')} GB"
                 conn.execute("""
                     INSERT INTO gpu_info (device_id, name, manufacturer, dedicated_memory, driver_version, current_usage)
                     VALUES (?,?,?,?,?,?)
@@ -3308,8 +3521,8 @@ def api_device_hardware_update(device_id):
                     device_id,
                     gpu.get('name', ''),
                     gpu.get('manufacturer', ''),
-                    gpu.get('dedicated_memory', ''),
-                    gpu.get('driver_version', ''),
+                    vram or '',
+                    gpu.get('driver_version') or gpu.get('driver') or '',
                     gpu.get('current_usage', 0.0),
                 ))
         
@@ -3317,16 +3530,19 @@ def api_device_hardware_update(device_id):
         if storage_list:
             conn.execute("DELETE FROM storage_devices WHERE device_id=?", (device_id,))
             for disk in storage_list:
+                def _gb(value):
+                    return f"{value} GB" if value not in (None, '') else ''
+
                 conn.execute("""
                     INSERT INTO storage_devices (device_id, name, drive_type, capacity, used, free, health)
                     VALUES (?,?,?,?,?,?,?)
                 """, (
                     device_id,
-                    disk.get('name', ''),
+                    disk.get('name') or disk.get('label') or disk.get('device') or '',
                     disk.get('drive_type', ''),
-                    disk.get('capacity', ''),
-                    disk.get('used', ''),
-                    disk.get('free', ''),
+                    disk.get('capacity') or _gb(disk.get('total_gb')),
+                    disk.get('used') or _gb(disk.get('used_gb')),
+                    disk.get('free') or _gb(disk.get('free_gb')),
                     disk.get('health', ''),
                 ))
         
@@ -3334,6 +3550,12 @@ def api_device_hardware_update(device_id):
         if net_list:
             conn.execute("DELETE FROM network_interfaces WHERE device_id=?", (device_id,))
             for netif in net_list:
+                speed = netif.get('speed')
+                if speed in (None, '') and netif.get('speed_mbps') is not None:
+                    speed = f"{netif.get('speed_mbps')} Mbps"
+                status = netif.get('status')
+                if status in (None, '') and netif.get('is_up') is not None:
+                    status = 'up' if netif.get('is_up') else 'down'
                 conn.execute("""
                     INSERT INTO network_interfaces (device_id, name, interface_type, ipv4, ipv6, mac, gateway, dns, speed, status)
                     VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -3341,13 +3563,13 @@ def api_device_hardware_update(device_id):
                     device_id,
                     netif.get('name', ''),
                     netif.get('interface_type', ''),
-                    netif.get('ipv4', ''),
+                    netif.get('ipv4') or netif.get('ip') or '',
                     netif.get('ipv6', ''),
                     netif.get('mac', ''),
                     netif.get('gateway', ''),
                     netif.get('dns', ''),
-                    netif.get('speed', ''),
-                    netif.get('status', ''),
+                    speed or '',
+                    status or '',
                 ))
         
         peri_list = data.get('peripherals', [])
