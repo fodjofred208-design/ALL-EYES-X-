@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Settings, MousePointer2, Keyboard, RefreshCw,
   Play, Square, Activity, Eye, Monitor,
-  Wifi, Signal, Zap, Gauge
+  Wifi, Signal, Zap, Gauge, Download
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useDevices } from '../context/DeviceContext';
@@ -259,6 +259,21 @@ const LiveMonitor = () => {
   }, [selectedDevice, showDataCheck]);
 
   const resetView = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+
+  /** Save the current live frame. Requires a Target Node and an active stream. */
+  const handleSnap = () => {
+    const canvas = canvasRef.current;
+    if (!selectedDevice || !isLive || !canvas || !canvas.width) return;
+    try {
+      const url = canvas.toDataURL('image/jpeg', 0.92);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${selectedDevice.hostname}_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
+      link.click();
+    } catch {
+      /* canvas may be tainted if the frame came from another origin */
+    }
+  };
 
   const toggleWatched = (id: string) =>
     setWatched(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -590,6 +605,15 @@ const LiveMonitor = () => {
               >
                 {isLive ? <Square size={14} /> : <Play size={14} />}
                 {isLive ? 'TERMINATE' : 'START STREAM'}
+              </button>
+              <button
+                onClick={handleSnap}
+                disabled={!selectedDevice || !isLive}
+                title={selectedDevice ? 'Save the current frame' : 'Select a Target Node first'}
+                className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 text-slate-400 rounded-xl font-orbitron text-[10px] hover:text-green-500 hover:bg-white/10 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <Download size={14} />
+                SNAP
               </button>
               <button className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 text-slate-400 rounded-xl font-orbitron text-[10px] hover:bg-white/10 transition-all">
                 <RefreshCw size={14} />
