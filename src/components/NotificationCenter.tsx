@@ -4,6 +4,7 @@ import { BellRing, X, Terminal, Download, Zap, ShieldAlert, Activity } from 'luc
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_BASE } from '../utils/api';
 import { usePolling } from '../hooks/usePolling';
+import { useSocket } from '../context/SocketContext';
 
 interface SystemLog { id: string; type: string; message: string; timestamp: number | string }
 
@@ -43,6 +44,7 @@ const formatStamp = (value: number | string): string => {
 };
 
 const NotificationCenter = () => {
+  const { socket } = useSocket();
   const [isOpen, setIsOpen] = useState(false);
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [unread, setUnread] = useState(0);
@@ -98,8 +100,31 @@ const NotificationCenter = () => {
     }
   }, [isOpen]);
 
-  // Pauses while the tab is hidden.
-  usePolling(fetchNotifications, 3000);
+  // The server already emits 'new_notification' on every event. Subscribing
+  // makes new events land immediately; the poll below is only a safety net for
+  // anything missed while the socket was down. Polling pauses on hidden tabs.
+  usePolling(fetchNotifications, 15000);
+
+  useEffect(() => {
+    if (!socket) return;
+    const onNotification = (n: { type?: string; message?: string; timestamp?: number | string }) => {
+      if (!n?.message) return;
+      const entry: SystemLog = {
+        id: `${n.timestamp ?? Date.now()}-${n.message.slice(0, 24)}`,
+        type: String(n.type ?? 'info').toLowerCase(),
+        message: String(n.message),
+        timestamp: n.timestamp ?? Date.now() / 1000,
+      };
+      setLogs(prev => [entry, ...prev].slice(0, 100));
+      if (!isOpen) {
+        setUnread(u => u + 1);
+        setShake(true);
+        setTimeout(() => setShake(false), 600);
+      }
+    };
+    socket.on('new_notification', onNotification);
+    return () => { socket.off('new_notification', onNotification); };
+  }, [socket, isOpen]);
 
   // open the panel from anywhere (Quick Actions → Notifications)
   useEffect(() => {
