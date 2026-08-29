@@ -4104,6 +4104,28 @@ def handle_client_heartbeat(data):
             emit('tasks', {'tasks': tasks})
 
 
+@socketio.on('touch_event')
+def handle_socket_touch_event(data):
+    """Route Socket.IO input events into the same queue as POST /api/touch.
+
+    The frontend emits `touch_event` over the socket whenever it is connected,
+    but there was no handler for it - so remote mouse/keyboard control silently
+    did nothing in the normal (connected) case and only worked when the socket
+    was down and the code fell back to HTTP. This makes both paths identical.
+    """
+    if not data or 'device_id' not in data:
+        return
+    for field in ('event', 'x', 'y'):
+        if field not in data:
+            return
+
+    global touch_event_counter
+    touch_event_counter += 1
+    data['id'] = touch_event_counter
+    data['timestamp'] = datetime.utcnow().isoformat()
+    touch_event_queues[data['device_id']].append(data)
+
+
 @socketio.on('command_result')
 def handle_command_result(data):
     device_id = data.get('device_id', '')
