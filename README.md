@@ -402,7 +402,169 @@ For remote use, prefer Tailscale and avoid exposing administrative interfaces di
 
 ---
 
-## 14. Troubleshooting
+## 14. Command Center scope (Target Node)
+
+The **Target Node** selector in the header drives the whole Command Center.
+
+```text
+ALL EYES STAT   → aggregate statistics for the entire system
+<device>        → every panel is limited to that one device
+```
+
+Selecting a device makes the dashboard call:
+
+```text
+GET /api/dashboard?device_id=<id>
+```
+
+Device totals, CPU/RAM/disk charts, traffic and the security score all follow
+the selection. The badge next to the title shows the active scope.
+
+---
+
+## 15. More Feature panels
+
+Live Monitor, Touch Monitor and Webcam each have a **More Feature** panel for
+watching several devices at once:
+
+- add or remove devices from the wall with `+ hostname` / `− hostname`
+- each tile shows the device's newest frame
+- **Focus** switches the main view to that device
+
+Terminal deliberately has **no** More Feature panel — it is a special case
+because it already has its own multi-device execution mode.
+
+---
+
+## 16. Data Check (Live Monitor)
+
+The **Data Check** panel shows only values the system can actually measure:
+
+```text
+Frame Rate      measured server-side from frame arrival timestamps
+Latency         browser-measured
+Frame Size      KB per frame
+Changed Pixels  percentage of the frame that changed
+Resolution      canvas width × height
+Encoding        JPEG (change-aware dirty rectangles)
+Transport       socket.io or http
+Last Frame      seconds since the newest frame arrived
+```
+
+Anything not yet measurable renders as `—`. Nothing is simulated.
+
+---
+
+## 17. Zoom
+
+Live Monitor and Touch Monitor both have zoom controls:
+
+```text
+−   zoom out (minimum 100%)
++   zoom in  (maximum 400%)
+Fit reset to 100%
+```
+
+On Live Monitor you can also drag to pan while zoomed. On Touch Monitor zoom is
+visual only, so the coordinates sent to the agent stay correct.
+
+---
+
+## 18. Remote control (Touch Monitor)
+
+```text
+TAKE CONTROL   → announces and takes control
+RELEASE CONTROL → hands control back
+```
+
+The remote user is **notified, not asked for consent**. The agent shows a
+visible on-screen notice:
+
+```text
+An ALL EYES X administrator has taken temporary control of this device.
+```
+
+Every takeover is recorded in `remote_sessions` and `audit_log`, and raises a
+notification:
+
+```text
+REMOTE CONTROL: admin took control of <hostname>
+```
+
+Both endpoints require login. Unauthenticated calls return `401`.
+
+---
+
+## 19. Webcam is opt-in
+
+The camera is **off by default**. The agent only captures frames after an
+administrator explicitly starts it:
+
+```text
+POST /api/webcam/<device_id>/start    → starts capture
+POST /api/webcam/<device_id>/switch   → front/back
+POST /api/webcam/<device_id>/stop     → stops capture
+```
+
+These endpoints require login. Each start writes:
+
+```text
+audit_log  → webcam_start, actor recorded
+activity   → WEBCAM START | device_id=... host=... by=admin
+notify     → CAMERA ACTIVE: admin opened the camera on <hostname>
+```
+
+---
+
+## 20. Device icons
+
+The Target Node list shows a neutral monitor when a device is **offline**, and
+switches to that device's operating-system logo when it comes **online**:
+
+```text
+Windows → Windows logo
+Linux   → Tux penguin
+macOS   → Apple logo
+Android → Android robot
+iOS     → iPhone outline
+unknown → lit monitor
+```
+
+This applies automatically to any future device that connects.
+
+---
+
+## 21. Alerts carry device, cause and fix
+
+Every alert in the Alert Center now shows:
+
+```text
+severity · device name · time
+message
+Cause:        why this alert fired
+Proposed fix: what to do about it
+```
+
+Whole-system alerts show `Entire system`; device alerts show the hostname.
+The **Report** button copies the full record including cause and fix.
+
+---
+
+## 22. New API endpoints
+
+```text
+GET  /api/stream/stats/<device_id>        measured stream statistics
+GET  /api/screenshot/<device_id>/latest   newest frame as raw JPEG
+GET  /api/webcam/<device_id>/latest       newest webcam frame as raw JPEG
+POST /api/remote/takeover                 announce and take control
+POST /api/remote/release                  hand control back
+POST /api/command/results                 command evidence history
+GET  /api/security/timeline               unified security timeline
+```
+
+---
+
+## 23. Troubleshooting
 
 ### npm error: Missing script dev
 
@@ -491,7 +653,7 @@ Also verify the target is private/Tailscale or explicitly authorized.
 
 ---
 
-## 15. Development commands
+## 24. Development commands
 
 ```powershell
 npm run dev
@@ -503,7 +665,7 @@ python client\client.py http://127.0.0.1:5000
 
 ---
 
-## 16. GitHub branch
+## 25. GitHub branch
 
 Updated development branch:
 
