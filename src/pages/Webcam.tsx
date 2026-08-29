@@ -53,9 +53,15 @@ const Webcam = () => {
     return () => { socket.off('webcam_frame', handleFrame); };
   }, [socket, canStream, selectedDevice]);
 
-  // Polling fallback — always on when active
+  // Polling is a FALLBACK only. The server already pushes every webcam frame
+  // over Socket.IO (`webcam_frame`), so polling on top of it doubles the load
+  // and caps the frame rate - the same bug that was fixed in Live Monitor.
+  const inFlightRef = useRef(false);
+
   const pollFrame = useCallback(async () => {
     if (!selectedDevice || !isActive) return;
+    if (inFlightRef.current) return;   // never stack overlapping requests
+    inFlightRef.current = true;
     try {
       const res = await fetch(`${API_BASE}/api/webcam/${selectedDevice.id}`);
       if (res.ok) {
@@ -71,20 +77,24 @@ const Webcam = () => {
           }
         }
       }
-    } catch {}
+    } catch {
+      /* keep last frame */
+    } finally {
+      inFlightRef.current = false;
+    }
   }, [selectedDevice, isActive]);
 
-  // Polling interval
+  // Polling interval - skipped entirely while the socket is delivering frames.
   useEffect(() => {
-    if (!canStream) {
+    if (!canStream || isConnected) {
       if (pollingRef.current) clearInterval(pollingRef.current);
       pollingRef.current = null;
       return;
     }
     const intervals = {
-      smooth: 16,   // high-performance: up to ~60 FPS
-      balanced: 25, // moderate: ~40 FPS
-      quality: 33,  // low-performance: ~30 FPS with steadier quality
+      smooth: 33,   // ~30 FPS ceiling for HTTP polling
+      balanced: 40,
+      quality: 50,
     };
     const ms = intervals[streamQuality];
     pollFrame();
@@ -92,7 +102,7 @@ const Webcam = () => {
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current);
     };
-  }, [canStream, pollFrame, streamQuality]);
+  }, [canStream, pollFrame, streamQuality, isConnected]);
 
   const handleToggle = () => {
     if (!selectedDevice) {
