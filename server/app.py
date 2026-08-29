@@ -1393,6 +1393,7 @@ def get_device_list_for_dashboard():
 # Compatible with aeyes_data.db
 # ============================================================
 @app.route('/api/dashboard', methods=['GET'])
+@login_required
 def api_dashboard():
     try:
         server_time = datetime.now().isoformat()
@@ -3252,6 +3253,7 @@ def api_device_software_update(device_id):
 
 
 @app.route('/api/stream/stats/<device_id>', methods=['GET'])
+@login_required
 def api_stream_stats(device_id):
     """Real, measured stream statistics for the Data Check panel."""
     screen_meta = latest_screenshot_meta.get(device_id) or {}
@@ -3424,6 +3426,7 @@ def switch_webcam(device_id):
 # API: DEVICES
 # ============================================================
 @app.route('/api/devices', methods=['GET'])
+@login_required
 def api_devices():
     devices_list = get_device_list_for_dashboard()
     online = sum(1 for d in devices_list if str(d.get('status', '')).lower() == 'online')
@@ -3437,6 +3440,7 @@ def api_devices():
 
 
 @app.route('/api/device/<device_id>', methods=['GET'])
+@login_required
 def api_device_detail(device_id):
     dev = connected_devices.get(device_id)
     if not dev:
@@ -3454,6 +3458,7 @@ def api_device_detail(device_id):
 # DEVICE DETAIL — Full enriched device info
 # ============================================================
 @app.route('/api/device/<device_id>/detail', methods=['GET'])
+@login_required
 def api_device_detail_full(device_id):
     dev = connected_devices.get(device_id)
     if not dev:
@@ -3681,6 +3686,7 @@ def api_device_remove(device_id):
 # DEVICE PREFERENCES
 # ============================================================
 @app.route('/api/device/<device_id>/preference', methods=['GET', 'POST'])
+@login_required
 def api_device_preference(device_id):
     if device_id not in connected_devices:
         return jsonify({'error': 'Device not found'}), 404
@@ -3887,6 +3893,7 @@ def api_device_hardware_update(device_id):
 # API: SECURITY ASSESSMENT
 # ============================================================
 @app.route('/api/security/assessment', methods=['GET'])
+@login_required
 def api_security_assessment():
     devices_list = []
     for dev_id, dev in connected_devices.items():
@@ -4218,6 +4225,7 @@ def api_security_timeline():
 # API: ANALYTICS
 # ============================================================
 @app.route('/api/analytics', methods=['GET'])
+@login_required
 def api_analytics_data():
     os_count = {}
     country_count = {}
@@ -4304,6 +4312,7 @@ def api_analytics_data():
 # API: ALERTS & NOTIFICATIONS
 # ============================================================
 @app.route('/api/alerts/<int:alert_id>/resolve', methods=['POST'])
+@login_required
 def api_alert_resolve(alert_id):
     conn = get_db()
     conn.execute("UPDATE alerts SET status='resolved' WHERE id=?", (alert_id,))
@@ -4314,6 +4323,7 @@ def api_alert_resolve(alert_id):
 
 
 @app.route('/api/alerts/<device_id>', methods=['GET', 'POST'])
+@login_required
 def api_alerts(device_id):
     if request.method == 'GET':
         return jsonify({'alerts': get_alerts_from_db(device_id)}), 200
@@ -4335,11 +4345,13 @@ def api_alerts(device_id):
 
 
 @app.route('/api/notifications', methods=['GET'])
+@login_required
 def api_get_notifications():
     return jsonify(get_notifications_from_db(50)), 200
 
 
 @app.route('/api/notify', methods=['POST'])
+@login_required
 def api_notify():
     try:
         data = request.get_json(force=True)
@@ -4357,6 +4369,7 @@ def api_notify():
 # API: GEOLOCATION
 # ============================================================
 @app.route('/api/geolocation', methods=['GET'])
+@login_required
 def api_geolocation():
     locations = []
     for dev_id, dev in connected_devices.items():
@@ -4445,6 +4458,7 @@ def api_transfer_list():
 # API: SYSTEM STATS
 # ============================================================
 @app.route('/api/system/stats', methods=['GET'])
+@login_required
 def api_system_stats():
     try:
         import psutil
