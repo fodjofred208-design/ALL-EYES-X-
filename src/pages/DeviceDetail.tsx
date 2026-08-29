@@ -15,6 +15,14 @@ interface DetailData {
   peripherals: Array<Record<string, unknown>>;
   preferences: Record<string, string>;
   telemetry?: Record<string, unknown>;
+  software?: {
+    installed_apps?: Array<{ name: string; version?: string }>;
+    app_count?: number;
+    user_files?: Array<{ name: string; path: string; kind: string; size: number }>;
+    file_counts?: Record<string, number>;
+    truncated?: boolean;
+    updated_at?: string;
+  };
 }
 
 const DeviceDetail: React.FC = () => {
@@ -23,6 +31,8 @@ const DeviceDetail: React.FC = () => {
   const [data, setData] = useState<DetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [showSoftware, setShowSoftware] = useState(false);
+  const [fileFilter, setFileFilter] = useState('all');
 
   useEffect(() => {
     if (!id) {
@@ -81,7 +91,7 @@ const DeviceDetail: React.FC = () => {
 
   if (!data) return null;
 
-  const { device, operating_system, processor, memory, graphics, storage, network_interfaces, peripherals, telemetry } = data;
+  const { device, operating_system, processor, memory, graphics, storage, network_interfaces, peripherals, telemetry, software } = data;
   const isOnline = device?.status === 'online';
 
   const Field: React.FC<{ label: string; value: string | number | null | undefined; mono?: boolean }> = ({ label, value, mono }) => (
@@ -326,6 +336,101 @@ const DeviceDetail: React.FC = () => {
               } mono />
               <Field label="Last Heartbeat" value={telemetry.updated_at as string} mono />
             </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Read More — installed apps, files, videos, media */}
+      <Card title="Read More — Software & Media">
+        {!software || (!software.installed_apps?.length && !software.user_files?.length) ? (
+          <p className="text-xs text-slate-600 italic">
+            No software inventory reported yet. The agent uploads it on a slower cycle
+            (default every 10 minutes) after it first registers.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <p className="text-[11px] text-slate-400">
+                {software.app_count ?? software.installed_apps?.length ?? 0} applications ·{' '}
+                {Object.entries(software.file_counts ?? {})
+                  .map(([k, v]) => `${v} ${k}`)
+                  .join(' · ') || 'no media indexed'}
+              </p>
+              <button
+                onClick={() => setShowSoftware(v => !v)}
+                className="px-3 py-1.5 rounded-lg border border-green-500/30 bg-green-500/10 text-[10px] font-orbitron uppercase tracking-widest text-green-400 hover:bg-green-600 hover:text-white transition-all"
+              >
+                {showSoftware ? 'Hide details' : 'Read more'}
+              </button>
+            </div>
+
+            {software.truncated && (
+              <p className="text-[10px] font-mono-data text-amber-500/80">
+                Listing truncated — the agent caps the scan so a large disk cannot flood the server.
+              </p>
+            )}
+
+            {showSoftware && (
+              <div className="space-y-4">
+                {/* media filter */}
+                <div className="flex flex-wrap gap-2">
+                  {['all', 'video', 'image', 'audio', 'document'].map(k => (
+                    <button
+                      key={k}
+                      onClick={() => setFileFilter(k)}
+                      className={`px-3 py-1.5 rounded-lg border text-[9px] font-orbitron uppercase transition-all ${
+                        fileFilter === k
+                          ? 'border-green-500/50 bg-green-500/10 text-green-300'
+                          : 'border-white/10 bg-white/5 text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      {k}
+                    </button>
+                  ))}
+                </div>
+
+                {/* installed applications */}
+                <div>
+                  <p className="text-[10px] font-orbitron uppercase tracking-widest text-slate-500 mb-2">
+                    Installed applications ({software.installed_apps?.length ?? 0})
+                  </p>
+                  <div className="max-h-64 overflow-y-auto aeyes-scroll space-y-1 pr-1">
+                    {(software.installed_apps ?? []).map((a, i) => (
+                      <div key={i} className="flex justify-between items-baseline gap-3 px-3 py-1.5 rounded bg-slate-900/40 border border-slate-700/20">
+                        <span className="text-[11px] text-slate-300 truncate">{a.name}</span>
+                        <span className="text-[10px] font-mono text-slate-600 shrink-0">{a.version || '—'}</span>
+                      </div>
+                    ))}
+                    {!(software.installed_apps ?? []).length && (
+                      <p className="text-[10px] font-mono-data text-slate-600 italic">No applications reported</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* media & documents */}
+                <div>
+                  <p className="text-[10px] font-orbitron uppercase tracking-widest text-slate-500 mb-2">
+                    Files in the user profile
+                    {fileFilter !== 'all' && ` — ${fileFilter}`}
+                  </p>
+                  <div className="max-h-72 overflow-y-auto aeyes-scroll space-y-1 pr-1">
+                    {(software.user_files ?? [])
+                      .filter(f => fileFilter === 'all' || f.kind === fileFilter)
+                      .map((f, i) => (
+                        <div key={i} className="flex justify-between items-baseline gap-3 px-3 py-1.5 rounded bg-slate-900/40 border border-slate-700/20">
+                          <span className="text-[11px] text-slate-300 truncate" title={f.path}>{f.name}</span>
+                          <span className="text-[10px] font-mono text-slate-600 shrink-0">
+                            {(f.size / 1048576).toFixed(1)} MB · {f.kind}
+                          </span>
+                        </div>
+                      ))}
+                    {!(software.user_files ?? []).filter(f => fileFilter === 'all' || f.kind === fileFilter).length && (
+                      <p className="text-[10px] font-mono-data text-slate-600 italic">No matching files indexed</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Card>

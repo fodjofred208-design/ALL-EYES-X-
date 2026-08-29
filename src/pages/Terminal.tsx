@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Terminal as TerminalIcon, ShieldAlert, Hash, Globe, ChevronRight, Zap, Download, Trash2, Layers } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useDevices } from '../context/DeviceContext';
 import { useSocket } from '../context/SocketContext';
 import { apiFetch } from '../utils/api';
@@ -79,6 +80,7 @@ const COMMAND_CATALOG: ManagedCommand[] = [
 ];
 
 const Terminal = () => {
+  const navigate = useNavigate();
   const { devices, selectedDevice, setSelectedDeviceId } = useDevices();
   const { socket, isConnected } = useSocket();
   const [history, setHistory] = useState<string[]>([
@@ -282,6 +284,14 @@ const Terminal = () => {
              <option value="">SELECT TARGET</option>
              {devices.map(d => <option key={d.id} value={d.id}>{d.hostname}</option>)}
            </select>
+           <button
+             onClick={() => navigate('/multi-shell')}
+             className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 border border-green-500/40 rounded text-green-300 hover:bg-green-600 hover:text-white transition-all text-[10px] font-orbitron uppercase"
+             title="Open the Multi-Shell page (Main Command / Solo Command)"
+           >
+             <Layers size={12} />
+             Multi-Shell
+           </button>
            <div className="flex items-center gap-2 px-3 py-1 bg-amber-500/10 border border-amber-500/30 rounded text-amber-400 text-[10px] font-orbitron uppercase">
              <ShieldAlert size={12} />
              Audited Admin Mode

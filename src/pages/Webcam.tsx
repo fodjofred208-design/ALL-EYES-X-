@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Camera, CameraOff, Video, RefreshCw, Download, Settings, Shield, Sun } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import { useDevices } from '../context/DeviceContext';
 import { useSocket } from '../context/SocketContext';
 import { API_BASE } from '../utils/api';
 import { notifySystem } from '../utils/notify';
 
 const Webcam = () => {
+  const navigate = useNavigate();
   const { devices, selectedDevice, setSelectedDeviceId } = useDevices();
   const { socket, isConnected } = useSocket();
   const [isActive, setIsActive] = useState(false);
@@ -400,12 +402,12 @@ const Webcam = () => {
 
           {/* MORE FEATURE — multi-camera wall */}
           <div className="glass-card p-4 border-green-500/10">
-            <button onClick={() => setShowMoreFeature(v => !v)} className="w-full flex items-center justify-between">
-              <span className="flex items-center gap-2 text-[10px] font-orbitron uppercase tracking-[0.25em] text-green-400">
+            <button onClick={() => navigate('/device-wall')} className="w-full flex items-center justify-between group">
+              <span className="flex items-center gap-2 text-[10px] font-orbitron uppercase tracking-[0.25em] text-green-400 group-hover:text-green-300">
                 <Camera size={14} /> More Feature — Multi-Camera Wall
               </span>
-              <span className="text-[9px] font-mono-data text-slate-500">
-                {watched.length} watching · {showMoreFeature ? 'hide' : 'open'}
+              <span className="text-[9px] font-mono-data text-slate-500 group-hover:text-green-400">
+                open full page →
               </span>
             </button>
 

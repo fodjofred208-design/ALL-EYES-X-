@@ -21,6 +21,8 @@ import Devices from './pages/Device';
 import DeviceDetail from './pages/DeviceDetail';
 
 import TerminalPage from './pages/Terminal';
+import MultiShell from './pages/MultiShell';
+import DeviceWall from './pages/DeviceWall';
 import WebcamPanel from './pages/Webcam';
 
 import P2PShare from './pages/P2PShare';
@@ -208,6 +210,8 @@ const AppContent: React.FC = () => {
               <Route path="/device/:id" element={<Panel><DeviceDetail /></Panel>} />
               <Route path="/live_monitor" element={<Panel><LiveMonitor /></Panel>} />
               <Route path="/terminal" element={<Panel><TerminalPage /></Panel>} />
+              <Route path="/multi-shell" element={<Panel><MultiShell /></Panel>} />
+              <Route path="/device-wall" element={<Panel><DeviceWall /></Panel>} />
               <Route path="/webcam" element={<Panel><WebcamPanel /></Panel>} />
               <Route path="/touch_monitor" element={<Panel><TouchMonitor /></Panel>} />
               <Route path="/p2p_share" element={<Panel><P2PShare /></Panel>} />

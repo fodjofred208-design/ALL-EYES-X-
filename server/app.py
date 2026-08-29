@@ -29,6 +29,7 @@ import base64
 import subprocess
 import socket
 import platform
+import shutil
 import sqlite3
 import ipaddress
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -502,6 +503,16 @@ def init_db():
             requested_by TEXT DEFAULT '',
             queued_at TEXT DEFAULT '',
             completed_at TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS software_inventory (
+            device_id TEXT PRIMARY KEY,
+            installed_apps TEXT DEFAULT '[]',
+            app_count INTEGER DEFAULT 0,
+            user_files TEXT DEFAULT '[]',
+            file_counts TEXT DEFAULT '{}',
+            truncated INTEGER DEFAULT 0,
+            updated_at TEXT DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS security_scans (
@@ -2756,6 +2767,114 @@ def api_send_command():
         return jsonify({'error': str(e)}), 400
 
 
+@app.route('/api/command/batch', methods=['POST'])
+@login_required
+def api_send_command_batch():
+    """Main Command mode: one command to many devices at once.
+
+    Returns one command_id per device so the caller can track each result
+    independently in its own terminal pane.
+    """
+    try:
+        data = request.get_json(force=True) or {}
+        device_ids = data.get('device_ids') or []
+        command = (data.get('command') or data.get('cmd') or '').strip()
+        mode = data.get('mode', 'main')
+
+        if not command:
+            return jsonify({'error': 'command is required'}), 400
+        if not device_ids:
+            return jsonify({'error': 'device_ids is required'}), 400
+
+        actor = session.get('user', 'unknown-admin')
+        queued = []
+        skipped = []
+
+        for device_id in device_ids:
+            if device_id not in connected_devices:
+                skipped.append({'device_id': device_id, 'reason': 'not connected'})
+                continue
+
+            command_id = str(uuid.uuid4())
+            task = {
+                'id': command_id,
+                'type': 'command',
+                'command': command,
+                'mode': mode,
+                'timestamp': datetime.now().isoformat(),
+            }
+            pending_tasks_queue.setdefault(device_id, []).append(task)
+
+            hostname = connected_devices[device_id].get('hostname', device_id[:8])
+            conn = get_db()
+            conn.execute(
+                "INSERT INTO command_results (command_id, device_id, command, requested_by, queued_at, success) "
+                "VALUES (?,?,?,?,?,0)",
+                (command_id, device_id, command, actor, datetime.now().isoformat()),
+            )
+            conn.commit()
+            conn.close()
+
+            audit_event(actor, device_id, 'command_batch_queued', 'queued', f'{mode}: {command[:1000]}')
+            activity('COMMAND BATCH', mode=mode, device=device_id[:8], host=hostname, by=actor)
+            queued.append({
+                'device_id': device_id,
+                'hostname': hostname,
+                'command_id': command_id,
+            })
+
+        add_notification(
+            'command',
+            f'BATCH ({mode.upper()}): {actor} sent "{command[:60]}" to {len(queued)} device(s)',
+        )
+
+        return jsonify({'success': True, 'queued': queued, 'skipped': skipped, 'mode': mode}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/command/msg', methods=['POST'])
+@login_required
+def api_send_msg():
+    """Send an administrator message to one or many devices.
+
+    The message is delivered as a visible on-screen notification on the target
+    machine - this is how the administrator tells an employee to step away
+    before taking control. It is logged like every other administrative action.
+    """
+    try:
+        data = request.get_json(force=True) or {}
+        device_ids = data.get('device_ids') or []
+        message = (data.get('message') or '').strip()
+        if not message:
+            return jsonify({'error': 'message is required'}), 400
+        if not device_ids:
+            return jsonify({'error': 'device_ids is required'}), 400
+
+        actor = session.get('user', 'unknown-admin')
+        delivered = []
+
+        for device_id in device_ids:
+            if device_id not in connected_devices:
+                continue
+            hostname = connected_devices[device_id].get('hostname', device_id[:8])
+            pending_tasks_queue.setdefault(device_id, []).append({
+                'id': str(uuid.uuid4()),
+                'type': 'notify_user',
+                'message': message,
+                'from': actor,
+                'timestamp': datetime.now().isoformat(),
+            })
+            audit_event(actor, device_id, 'admin_message_sent', 'queued', message[:1000])
+            activity('MESSAGE SENT', device=device_id[:8], host=hostname, by=actor)
+            add_notification('message', f'MESSAGE from {actor} to {hostname}: {message[:120]}')
+            delivered.append({'device_id': device_id, 'hostname': hostname})
+
+        return jsonify({'success': True, 'delivered': delivered}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
 @app.route('/api/command/result', methods=['POST'])
 def api_command_result():
     try:
@@ -3015,6 +3134,40 @@ def _measure_fps(kind, device_id):
     return round((len(stamps) - 1) / window, 1)
 
 
+@app.route('/api/device/<device_id>/software', methods=['POST'])
+def api_device_software_update(device_id):
+    """Store the installed-apps / files / media inventory from the agent."""
+    if device_id not in connected_devices:
+        return jsonify({'error': 'Device not found'}), 404
+    try:
+        data = request.get_json(force=True) or {}
+        apps_block = data.get('installed_apps') or {}
+        files_block = data.get('user_files') or {}
+
+        apps = apps_block.get('apps') or []
+        files = files_block.get('files') or []
+
+        conn = get_db()
+        conn.execute("""
+            INSERT OR REPLACE INTO software_inventory
+            (device_id, installed_apps, app_count, user_files, file_counts, truncated, updated_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (
+            device_id,
+            json.dumps(apps),
+            int(apps_block.get('count') or len(apps)),
+            json.dumps(files),
+            json.dumps(files_block.get('counts') or {}),
+            1 if files_block.get('truncated') else 0,
+            datetime.now().isoformat(),
+        ))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'device_id': device_id}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
 @app.route('/api/stream/stats/<device_id>', methods=['GET'])
 def api_stream_stats(device_id):
     """Real, measured stream statistics for the Data Check panel."""
@@ -3255,6 +3408,25 @@ def api_device_detail_full(device_id):
         open_ports = json.loads(tel_data.get('open_ports') or '[]')
     except Exception:
         open_ports = []
+
+    # Installed apps + user media/documents for the "Read More" panel.
+    sw_row = conn.execute("SELECT * FROM software_inventory WHERE device_id=?", (device_id,)).fetchone()
+    software_data = {}
+    if sw_row:
+        sw = dict(sw_row)
+        def _json_or(value, fallback):
+            try:
+                return json.loads(value or fallback)
+            except Exception:
+                return json.loads(fallback)
+        software_data = {
+            'installed_apps': _json_or(sw.get('installed_apps'), '[]'),
+            'app_count': sw.get('app_count') or 0,
+            'user_files': _json_or(sw.get('user_files'), '[]'),
+            'file_counts': _json_or(sw.get('file_counts'), '{}'),
+            'truncated': bool(sw.get('truncated')),
+            'updated_at': sw.get('updated_at'),
+        }
     
     pref_rows = conn.execute("SELECT preference_key, preference_value FROM device_preferences WHERE device_id=?", (device_id,)).fetchall()
     pref_data = {r['preference_key']: r['preference_value'] for r in pref_rows}
@@ -3359,6 +3531,7 @@ def api_device_detail_full(device_id):
         'network_interfaces': net_data,
         'peripherals': peri_data,
         'preferences': pref_data,
+        'software': software_data,
         'telemetry': {
             'cpu': tel_data.get('cpu'),
             'ram': tel_data.get('ram'),
@@ -3756,6 +3929,143 @@ def api_nmap_result():
         return jsonify({'success': True}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/discovery/network', methods=['POST'])
+@login_required
+def api_discovery_network():
+    """Discover hosts on the administrator's own network.
+
+    Runs on the SERVER machine (which is on the LAN / Tailscale net) so it can
+    reach hosts that have no agent installed yet. Restricted to private and
+    Tailscale ranges by validate_scan_target() - never the public internet.
+    """
+    try:
+        data = request.get_json(force=True) or {}
+        target = (data.get('target') or '').strip()
+        if not target:
+            return jsonify({'error': 'target is required (e.g. 192.168.1.0/24)'}), 400
+
+        network = validate_scan_target(target)
+
+        if not shutil.which('nmap'):
+            return jsonify({
+                'error': 'nmap is not installed on the server machine',
+                'hint': 'Install Nmap and make sure it is on PATH, then retry.',
+            }), 400
+
+        actor = session.get('user', 'unknown-admin')
+        scan_id = str(uuid.uuid4())
+
+        proc = subprocess.run(
+            ['nmap', '-sn', '-oX', '-', network],
+            capture_output=True, text=True, timeout=180,
+        )
+
+        hosts = []
+        try:
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(proc.stdout)
+            for host in root.findall('host'):
+                status_node = host.find('status')
+                addr = ''
+                for a in host.findall('address'):
+                    if a.get('addrtype') == 'ipv4':
+                        addr = a.get('addr', '')
+                hostname = ''
+                hn = host.find('hostnames/hostname')
+                if hn is not None:
+                    hostname = hn.get('name', '')
+                if addr:
+                    hosts.append({
+                        'ip': addr,
+                        'hostname': hostname,
+                        'state': status_node.get('state', '') if status_node is not None else '',
+                        # flag hosts that already run an ALL EYES X agent
+                        'agent_installed': any(
+                            d.get('ip') == addr for d in connected_devices.values()
+                        ),
+                    })
+        except Exception as e:
+            return jsonify({'error': f'Could not parse nmap output: {e}'}), 500
+
+        conn = get_db()
+        conn.execute("""
+            INSERT INTO security_scans
+            (scan_id, device_id, scan_type, target, status, command, result, parsed_json,
+             requested_by, queued_at, completed_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, (scan_id, 'network', 'discovery', network,
+              'completed' if proc.returncode == 0 else 'failed',
+              f'nmap -sn {network}', proc.stdout[:20000], json.dumps({'hosts': hosts}),
+              actor, datetime.now().isoformat(), datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+
+        audit_event(actor, '', 'network_discovery', 'completed',
+                    f'{network}: {len(hosts)} host(s) found')
+        activity('NETWORK DISCOVERY', network=network, hosts=len(hosts), by=actor)
+        add_notification('security',
+                         f'DISCOVERY: {len(hosts)} host(s) found on {network} by {actor}')
+
+        return jsonify({
+            'success': True,
+            'scan_id': scan_id,
+            'network': network,
+            'hosts': hosts,
+            'host_count': len(hosts),
+        }), 200
+    except PermissionError as e:
+        return jsonify({'error': str(e)}), 403
+    except subprocess.TimeoutExpired:
+        return jsonify({'error': 'Discovery scan timed out'}), 504
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/discovery/scan/<scan_id>/download', methods=['GET'])
+@login_required
+def api_discovery_download(scan_id):
+    """Download a discovery/scan result as a plain-text report."""
+    conn = get_db()
+    row = conn.execute("SELECT * FROM security_scans WHERE scan_id=?", (scan_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'error': 'Scan not found'}), 404
+
+    d = dict(row)
+    lines = [
+        'ALL EYES X - SCAN REPORT',
+        '=' * 60,
+        f"Scan ID     : {d.get('scan_id')}",
+        f"Type        : {d.get('scan_type')}",
+        f"Target      : {d.get('target')}",
+        f"Status      : {d.get('status')}",
+        f"Requested by: {d.get('requested_by')}",
+        f"Queued at   : {d.get('queued_at')}",
+        f"Completed at: {d.get('completed_at')}",
+        '=' * 60,
+        '',
+    ]
+    try:
+        parsed = json.loads(d.get('parsed_json') or '{}')
+    except Exception:
+        parsed = {}
+
+    for h in parsed.get('hosts', []):
+        agent = 'yes' if h.get('agent_installed') else 'no'
+        lines.append(
+            f"{h.get('ip',''):<18} {h.get('hostname','') or '-':<24} "
+            f"state={h.get('state','')}  agent={agent}"
+        )
+
+    if not parsed.get('hosts'):
+        lines.append(d.get('result') or '(no data)')
+
+    body = '\n'.join(lines) + '\n'
+    return Response(body, mimetype='text/plain', headers={
+        'Content-Disposition': f'attachment; filename="alleyesx-scan-{scan_id[:8]}.txt"',
+    })
 
 
 @app.route('/api/security/nmap/scans', methods=['GET'])
