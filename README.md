@@ -344,6 +344,60 @@ Use from the Security page:
 3. Select scan type.
 4. Click `START NMAP`.
 
+### Reading a finished scan
+
+Each scan row in the panel is **clickable**. Collapsed it shows a one-line summary
+of the first six ports. Click it to expand into the full result:
+
+```text
+PORT   PROTO   STATE   SERVICE   VERSION
+22     tcp     open    ssh       OpenSSH 8.9
+445    tcp     open    microsoft-ds
+3389   tcp     open    ms-wbt-server
+```
+
+Expanded rows also give you:
+
+```text
+Download report   → plain-text report of that scan
+Refresh           → re-fetch the scan list
+```
+
+While the agent has not reported back yet the row shows `running…`; it flips to
+`completed` or `failed` on its own.
+
+### Report format
+
+`Download report` produces a text file named `alleyesx-scan-<id>.txt`:
+
+```text
+ALL EYES X - SCAN REPORT
+============================================================
+Scan ID     : 84b72cb3-763e-4228-85f7-c54eb444545e
+Type        : service
+Target      : 192.168.1.10
+Status      : completed
+Requested by: admin
+Queued at   : 2026-08-29T08:45:30
+Completed at: 2026-08-29T08:45:31
+============================================================
+
+OPEN PORTS
+------------------------------------------------------------
+PORT      PROTO   STATE     SERVICE           VERSION
+22        tcp     open      ssh               OpenSSH 8.9
+445       tcp     open      microsoft-ds
+```
+
+Discovery scans list hosts instead, and flag which ones already run an agent:
+
+```text
+HOSTS
+------------------------------------------------------------
+10.0.0.1           gateway.local            state=up  agent=no
+10.0.0.31          shell-a                  state=up  agent=yes
+```
+
 Allowed targets by default:
 
 ```text
@@ -653,7 +707,139 @@ Also verify the target is private/Tailscale or explicitly authorized.
 
 ---
 
-## 24. Development commands
+## 24. Eye animation
+
+The ALL EYES X eye is used on the loading screen, login, welcome page and the
+sidebar. Every animation runs through one helper:
+
+```text
+duration = base_seconds / speed
+```
+
+Default (`speed = 1`) timings:
+
+```text
+scanning valves   2.4s / 3.6s / 4.8s   (three rings, alternating direction)
+crosshair valve   3.2s
+scan sweep        1.8s
+pupil breathing   1.3s
+energy pulse      1.3s
+idle wander       every 0.9s
+blink             every 2.2s
+outer glow        2.4s
+```
+
+The pupil also tracks the mouse with a spring that gets snappier as `speed` rises.
+
+### Per-instance speed
+
+`<NeuralEye speed={n} />` makes one instance more agitated without changing the
+others:
+
+```text
+Login (normal)            speed 1.25
+Login (security lockdown) speed 2
+Padlock eye (lockdown)    speed 2.2
+```
+
+So during the security lockdown the eye visibly reads as danger, which is what
+the original design intended.
+
+---
+
+## 25. What changed and how to activate it
+
+Everything below is already active — this lists what it does and anything you
+need to switch on.
+
+### Bugs fixed
+
+| Problem | Symptom you would have seen | Status |
+|---|---|---|
+| Terminal never got live results | typed a command, output never appeared | fixed — results now broadcast |
+| Telemetry wiped on empty heartbeat | CPU/RAM/firewall dropped to 0 between refreshes | fixed — only present keys are written |
+| Fresh install crashed at startup | `no such column: severity` | fixed — index moved after the migration |
+| Duplicate schema | database missing what the Command Center asked for | fixed — one schema, `database_init.py` delegates to `app.py` |
+| Data readable with no login | anyone on the network could enumerate the fleet | fixed — 25 routes now login-gated |
+| 7 frontend calls missing credentials | pages broke once routes were protected | fixed |
+| N+1 query | slow Command Center with many devices | fixed — one batched query |
+| Pollers ran in hidden tabs | CPU burn while the tab was in the background | fixed — pause on `visibilitychange` |
+| Tables grew forever | database file kept growing | fixed — hourly retention sweep |
+| Touch Control blank screen | mirror never showed the remote screen | fixed — listened for the wrong socket event |
+| Misleading empty-state hint | told you to look for a log line that never prints | fixed |
+
+### Retention limits (automatic, hourly)
+
+```text
+alerts           5,000 rows
+audit_log       10,000 rows
+command_results  5,000 rows
+auth_attempts    5,000 rows
+remote_sessions  2,000 rows
+security_scans     500 rows
+notifications      200 rows   (already existed)
+traffic_samples  5,000 rows   (already existed)
+```
+
+Newest rows are always kept. Change them in `RETENTION_LIMITS` in `server/app.py`.
+
+### Environment variables
+
+All optional — defaults work out of the box.
+
+```powershell
+# Login
+$env:ADMIN_USER="admin"
+$env:ADMIN_PASS="change-me"
+$env:SECRET_KEY="a-long-random-string"
+
+# Recovery phrase for the security lockdown (store the hash, not the phrase)
+$env:RECOVERY_PHRASE_HASH="<sha256 hex>"
+
+# Lockdown tuning
+$env:AUTH_LOCK_THRESHOLD="5"
+$env:AUTH_LOCK_WINDOW_MINUTES="15"
+$env:AUTH_RECOVERY_UNLOCK_MINUTES="60"
+
+# Agent streaming
+$env:ALLEYESX_STREAM_PROFILE="low"      # low | balanced | high
+$env:ALLEYESX_SCREENSHOT_INTERVAL="0.02"
+$env:ALLEYESX_WEBCAM_INTERVAL="0.02"
+$env:ALLEYESX_TOUCH_POLL_INTERVAL="0.5"
+$env:ALLEYESX_SOFTWARE_REPORT_INTERVAL="600"
+$env:ALLEYESX_FULL_FRAME_KEEPALIVE="1.0"
+
+# Opt-in sensitive capabilities (off by default)
+$env:ALLEYESX_ENABLE_PERSISTENCE="1"
+$env:ALLEYESX_ENABLE_KEYLOG_DIAGNOSTIC="1"
+$env:ALLEYESX_ALLOW_RAW_COMMANDS="1"
+
+# Server
+$env:AEX_AUTHORIZED_PUBLIC_SCAN_TARGETS="203.0.113.10/32"
+$env:OFFLINE_NOTIFY_COOLDOWN="900"
+$env:AEX_LOG_LEVEL="INFO"
+```
+
+### What is off by default and why
+
+```text
+Camera capture        off until an admin explicitly starts it
+Persistence           off — set ALLEYESX_ENABLE_PERSISTENCE=1
+Keylogger diagnostic  off — set ALLEYESX_ENABLE_KEYLOG_DIAGNOSTIC=1
+Raw shell commands    off — set ALLEYESX_ALLOW_RAW_COMMANDS=1, then use "shell:<cmd>"
+Public-range scanning blocked — allow specific ranges via AEX_AUTHORIZED_PUBLIC_SCAN_TARGETS
+```
+
+### Known limitation
+
+`server/dashboard_engine.py` (891 lines) is **dead code** — it is not imported
+anywhere and `app.py` has its own inline implementations of the same logic. It is
+left in place rather than deleted. Either delete it or wire it in and remove the
+inline duplicates; it should not be edited as though it were live.
+
+---
+
+## 26. Development commands
 
 ```powershell
 npm run dev
@@ -665,7 +851,7 @@ python client\client.py http://127.0.0.1:5000
 
 ---
 
-## 25. GitHub branch
+## 27. GitHub branch
 
 Updated development branch:
 
