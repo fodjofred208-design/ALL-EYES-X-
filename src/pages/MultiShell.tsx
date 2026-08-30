@@ -251,34 +251,63 @@ const MultiShell: React.FC = () => {
         </div>
       </div>
 
-      {/* Main command bar */}
-      <div className="glass-card p-4">
-        <div className="flex items-center gap-3">
-          <TerminalIcon size={16} className="text-green-500 shrink-0" />
-          <input
-            value={command}
-            onChange={e => setCommand(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && mode === 'main') { e.preventDefault(); runMain(); } }}
-            placeholder={mode === 'main'
-              ? 'Type a command and press Enter to run it on every selected device…'
-              : 'Solo mode: use the per-device terminals below.'}
-            className="flex-1 bg-black/50 border border-green-500/20 rounded-lg px-3 py-2.5 text-[12px] font-mono-data text-green-300 placeholder-slate-600 focus:outline-none focus:border-green-500/50"
-          />
-          <button
-            onClick={() => mode === 'main' ? runMain() : setMsgOpen(true)}
-            className="px-4 py-2.5 rounded-lg bg-green-600/20 border border-green-500/40 text-green-300 hover:bg-green-600 hover:text-white transition-all flex items-center gap-2 text-[10px] font-orbitron uppercase"
-          >
-            {mode === 'main' ? <Send size={14} /> : <MessageSquare size={14} />}
-            {mode === 'main' ? 'Run' : 'msg'}
-          </button>
+      {/* MAIN mode: one shared command bar fanned out to every target.
+          SOLO mode: no shared bar - each device gets its own terminal below. */}
+      {mode === 'main' ? (
+        <div className="glass-card p-4">
+          <div className="flex items-center gap-3">
+            <TerminalIcon size={16} className="text-green-500 shrink-0" />
+            <input
+              value={command}
+              onChange={e => setCommand(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); runMain(); } }}
+              placeholder="Type a command and press Enter to run it on every selected device…"
+              className="flex-1 bg-black/50 border border-green-500/20 rounded-lg px-3 py-2.5 text-[12px] font-mono-data text-green-300 placeholder-slate-600 focus:outline-none focus:border-green-500/50"
+            />
+            <button
+              onClick={runMain}
+              className="px-4 py-2.5 rounded-lg bg-green-600/20 border border-green-500/40 text-green-300 hover:bg-green-600 hover:text-white transition-all flex items-center gap-2 text-[10px] font-orbitron uppercase"
+            >
+              <Send size={14} /> Run on all
+            </button>
+            <button
+              onClick={() => setMsgOpen(true)}
+              className="px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:text-white transition-all flex items-center gap-2 text-[10px] font-orbitron uppercase"
+            >
+              <MessageSquare size={14} /> msg
+            </button>
+          </div>
+          <p className="mt-2 text-[9px] font-mono-data text-slate-600">
+            Targets: {activeDevices.length ? activeDevices.map(d => d.hostname).join(', ') : 'all online devices'}
+          </p>
         </div>
-        <p className="mt-2 text-[9px] font-mono-data text-slate-600">
-          Targets: {activeDevices.length ? activeDevices.map(d => d.hostname).join(', ') : 'all online devices'}
-        </p>
-      </div>
+      ) : (
+        <div className="glass-card p-4 border-cyan-500/20">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[11px] font-orbitron uppercase tracking-widest text-cyan-300">
+                Solo Command
+              </p>
+              <p className="text-[9px] font-mono-data text-slate-500 mt-1">
+                Each device below has its own terminal and its own command. Nothing is shared.
+              </p>
+            </div>
+            <button
+              onClick={() => setMsgOpen(true)}
+              className="px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:text-white transition-all flex items-center gap-2 text-[10px] font-orbitron uppercase"
+            >
+              <MessageSquare size={14} /> msg
+            </button>
+          </div>
+        </div>
+      )}
 
-      {/* Per-device terminals */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Per-device terminals.
+          MAIN: two-up compact read-only panes (the shared bar drives them).
+          SOLO: one-up full-height terminals, each with its own command input. */}
+      <div className={mode === 'solo'
+        ? "grid grid-cols-1 gap-4"
+        : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
         {activeDevices.map(d => {
           const pane = panes[d.id];
           return (
@@ -290,7 +319,7 @@ const MultiShell: React.FC = () => {
                 <span className="text-[8px] font-mono-data text-slate-600">{d.ip}</span>
               </div>
 
-              <div className="h-44 overflow-y-auto aeyes-scroll p-3 bg-black/40 font-mono-data text-[11px] text-green-400/80">
+              <div className={`${mode === 'solo' ? 'h-72' : 'h-44'} overflow-y-auto aeyes-scroll p-3 bg-black/40 font-mono-data text-[11px] text-green-400/80`}>
                 {(!pane || pane.lines.length === 0) && (
                   <p className="text-slate-600">Waiting for output…</p>
                 )}
