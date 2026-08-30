@@ -23,7 +23,7 @@ const QuickActions: React.FC = () => {
       window.dispatchEvent(new Event('aeyes-open-notifications'));
       return;
     }
-    navigate(path);
+    navigate(path, path === '/devices' ? { state: { from: 'dashboard' } } : undefined);
   };
 
   return (

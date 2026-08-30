@@ -14,6 +14,20 @@ const IDLE_WANDER_SECONDS = 2.5;        // pupil drift while the mouse is still
 const BLINK_SECONDS = 3;                // blink interval
 const IDLE_RESUME_SECONDS = 1.2;        // mouse must be still this long first
 
+// Where the eye looks by itself when no cursor is present. Deliberate, small
+// offsets rather than random jitter: each glance is a brief saccade that the
+// spring eases into, then the eye rests there until the next one - which is how
+// a real eye behaves. Amplitudes stay small so the pupil never leaves the iris.
+const GAZE_TARGETS: Array<{ x: number; y: number }> = [
+  { x: 0, y: 0 },    // centre
+  { x: -9, y: 0 },   // left
+  { x: 9, y: 0 },    // right
+  { x: 0, y: -7 },   // up
+  { x: 8, y: -6 },   // up-right
+  { x: -8, y: -6 },  // up-left
+  { x: 0, y: 6 },    // down
+];
+
 const NeuralEye: React.FC<{ size?: number; active?: boolean; color?: string; speed?: number }> = ({ 
   size = 200, 
   active = true,
@@ -44,15 +58,24 @@ const NeuralEye: React.FC<{ size?: number; active?: boolean; color?: string; spe
       }
     };
 
-    // Idle wander: only runs once the mouse has been still for a moment.
+    // The iris follows the cursor whenever one is present. Idle gaze only runs
+    // once the mouse has been still for a moment.
     // Previously this started on mount and was never stopped while the mouse
     // moved, so it overwrote the mouse position every 0.9s - two writers
     // fighting over the same motion values, which is what made it jitter.
+    let lastGaze = -1;
     const startWander = () => {
       stopWander();
       wanderTimer.current = setInterval(() => {
-        mouseX.set((Math.random() - 0.5) * 16);
-        mouseY.set((Math.random() - 0.5) * 16);
+        // Never pick the same gaze twice in a row, so the eye does not twitch
+        // between two spots.
+        let next = lastGaze;
+        while (next === lastGaze) {
+          next = Math.floor(Math.random() * GAZE_TARGETS.length);
+        }
+        lastGaze = next;
+        mouseX.set(GAZE_TARGETS[next].x);
+        mouseY.set(GAZE_TARGETS[next].y);
       }, d(IDLE_WANDER_SECONDS));
     };
 

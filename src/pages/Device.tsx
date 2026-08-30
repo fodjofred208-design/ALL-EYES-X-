@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import BackButton from '../components/BackButton';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useDevices } from '../context/DeviceContext';
 import DeviceRow from '../components/DeviceRow';
@@ -21,6 +21,11 @@ const alertCount = deviceAlertCount;
 const Devices: React.FC = () => {
   const { devices, loading, error, removeDevice, selectedDeviceId, setSelectedDeviceId } = useDevices();
   const navigate = useNavigate();
+  const location = useLocation();
+  // The Command Center navigates here with { state: { from: 'dashboard' } };
+  // the sidebar uses a plain NavLink, so it arrives with no state. That is what
+  // tells the two entries apart.
+  const fromDashboard = (location.state as { from?: string } | null)?.from === 'dashboard';
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline'>('all');
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -111,25 +116,37 @@ const Devices: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* HEADER */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
+      {/* HEADER - two entries, two presentations.
+          From the Command Center: a back arrow with the title beside it, so it
+          reads as a drill-down. From the sidebar: no back arrow (there is
+          nothing to go back to) and the Command Center's own title treatment. */}
+      {fromDashboard ? (
+        <div className="flex items-center gap-3">
           <BackButton />
-          <h2 className="text-xl font-bold text-green-400 uppercase tracking-wider">Devices Inventory</h2>
-          <p className="text-sm text-slate-500">
-            {devices.length} total &middot; {onlineCount} online &middot; {offlineCount} offline
-            {totalAlerts > 0 && <> &middot; <span className="text-amber-400">{totalAlerts} alert{totalAlerts === 1 ? '' : 's'}</span></>}
-          </p>
+          <h2 className="text-xl font-bold text-green-400 uppercase tracking-wider">
+            Devices Inventory
+          </h2>
         </div>
-        <div className="flex items-center gap-2">
+      ) : (
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+          <div>
+            <h1 className="text-3xl md:text-4xl font-orbitron font-bold tracking-[0.28em] text-white aeyes-title-glow">
+              DEVICES <span className="text-[#22c55e]">CENTER</span>
+            </h1>
+          </div>
           <button
             onClick={() => navigate('/')}
-            className="px-3 py-1.5 text-xs font-medium text-slate-300 bg-slate-800/50 border border-slate-700/30 rounded-lg hover:bg-slate-700/50 transition-colors"
+            className="px-4 py-2 text-xs font-orbitron uppercase tracking-[0.15em] text-green-400 bg-green-500/10 border border-green-500/25 rounded-lg hover:bg-green-600 hover:text-white transition-colors self-start"
           >
-            Dashboard
+            Command Center
           </button>
         </div>
-      </div>
+      )}
+
+      <p className="text-sm text-slate-500 -mt-3">
+        {devices.length} total &middot; {onlineCount} online &middot; {offlineCount} offline
+        {totalAlerts > 0 && <> &middot; <span className="text-amber-400">{totalAlerts} alert{totalAlerts === 1 ? '' : 's'}</span></>}
+      </p>
 
       {/* FILTERS */}
       <div className="flex flex-col sm:flex-row gap-3">

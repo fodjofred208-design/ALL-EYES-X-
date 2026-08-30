@@ -33,7 +33,7 @@ const KpiStrip: React.FC = () => {
         sub="registered fleet"
         icon={<Monitor size={16} />}
         accent="#22c55e"
-        onClick={() => navigate('/devices')}
+        onClick={() => navigate('/devices', { state: { from: 'dashboard' } })}
         delay={0}
       />
       <KpiCard

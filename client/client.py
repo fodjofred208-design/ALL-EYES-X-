@@ -298,14 +298,212 @@ def generate_device_id():
 # ============================================================
 # SYSTEM INFORMATION COLLECTION
 # ============================================================
+# OPERATING SYSTEM + VIRTUALIZATION DETECTION
+# ============================================================
+
+def _read_os_release():
+    """Parse /etc/os-release (and the legacy lsb_release file) into a dict."""
+    data = {}
+    for path in ('/etc/os-release', '/usr/lib/os-release', '/etc/lsb-release'):
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or '=' not in line or line.startswith('#'):
+                        continue
+                    key, _, value = line.partition('=')
+                    data[key.strip()] = value.strip().strip('"').strip("'")
+        except Exception:
+            continue
+    return data
+
+
+def get_os_name():
+    """Human-readable operating-system identity, distribution included.
+
+    Registration used to send capability_profile()['platform'], which is only
+    the platform KIND ('windows', 'linux', 'darwin'). That is why the Devices
+    table showed a generic label or 'Unknown' in the OS column instead of the
+    actual system. This resolves a real name on every family the agent supports:
+    Windows, the Linux distributions, macOS/Darwin, Solaris/illumos, the BSDs
+    and IBM AIX.
+    """
+    kind = platform_kind()
+
+    if kind == 'windows':
+        # Win32_OperatingSystem.Caption is the marketing name, e.g.
+        # "Microsoft Windows 10 Pro". Prefer it; fall back to the stdlib.
+        try:
+            out = subprocess.check_output(
+                'powershell -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).Caption"',
+                shell=True, timeout=10, stderr=subprocess.DEVNULL,
+            ).decode('utf-8', errors='ignore').strip()
+            caption = out.splitlines()[-1].strip() if out else ''
+            if caption and caption.lower() != 'caption':
+                return caption.replace('Microsoft ', '')
+        except Exception:
+            pass
+        release = platform.release() or ''
+        return f"Windows {release}".strip()
+
+    if kind == 'linux':
+        rel = _read_os_release()
+        name = rel.get('NAME') or rel.get('DISTRIB_ID') or ''
+        version = rel.get('VERSION') or rel.get('DISTRIB_RELEASE') or ''
+        if not name:
+            # Older or minimal systems without os-release.
+            for cmd in (['lsb_release', '-ds'], ['hostnamectl', '--pretty']):
+                try:
+                    if shutil.which(cmd[0]):
+                        out = subprocess.check_output(cmd, timeout=5,
+                                                      stderr=subprocess.DEVNULL).decode().strip()
+                        if out:
+                            return out.strip('"')
+                except Exception:
+                    continue
+            try:
+                with open('/etc/issue', 'r', encoding='utf-8', errors='ignore') as f:
+                    line = f.readline().strip()
+                if line:
+                    return line.split('\n')[0].split('\l')[0].strip()
+            except Exception:
+                pass
+        if name:
+            return f"{name} {version}".strip()
+        return f"Linux {platform.release()}".strip()
+
+    if kind == 'macos':
+        try:
+            ver = subprocess.check_output(['sw_vers', '-productVersion'],
+                                          timeout=5, stderr=subprocess.DEVNULL).decode().strip()
+            if ver:
+                return f"macOS {ver}"
+        except Exception:
+            pass
+        return f"macOS {platform.mac_ver()[0]}".strip()
+
+    # Solaris / illumos, the BSDs, AIX - uname carries the family and release.
+    system = (platform.system() or '').strip()
+    release = (platform.release() or '').strip()
+    if system:
+        return f"{system} {release}".strip()
+    return platform.platform()
+
+
+def detect_virtualization():
+    """Report whether this machine is a virtual machine, and which hypervisor.
+
+    Checks DMI identity, the CPU hypervisor flag, systemd-detect-virt and the
+    Windows computer-system model, so a VM is identified even when only one of
+    those sources is readable. Returns is_vm False with an empty hypervisor
+    when nothing indicates virtualization - never a guess.
+    """
+    hypervisor = ''
+    evidence = []
+
+    signatures = {
+        'VMware': ('vmware', 'vmware virtual'),
+        'VirtualBox': ('virtualbox', 'vboxvbox', 'vbox'),
+        'QEMU': ('qemu',),
+        'KVM': ('kvm',),
+        'Hyper-V': ('hyper-v', 'virtual machine', 'microsoft corporation virtual'),
+        'Xen': ('xen', 'hvm domu'),
+        'Parallels': ('parallels',),
+        'Bochs': ('bochs',),
+        'innotek GmbH (VirtualBox)': ('innotek',),
+    }
+
+    def match(text):
+        low = (text or '').lower()
+        for name, needles in signatures.items():
+            if any(n in low for n in needles):
+                return name
+        return ''
+
+    # 1. Linux DMI identity - the most reliable source there.
+    for path in ('/sys/class/dmi/id/product_name', '/sys/class/dmi/id/sys_vendor',
+                 '/sys/class/dmi/id/board_vendor', '/sys/class/dmi/id/bios_vendor'):
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                value = f.read().strip()
+        except Exception:
+            continue
+        hit = match(value)
+        if hit:
+            hypervisor = hypervisor or hit
+            evidence.append(f"{path.split('/')[-1]}={value}")
+
+    # 2. systemd-detect-virt names the hypervisor outright, so it runs before
+    #    the CPU flag: the flag only proves virtualization exists, not by what.
+    try:
+        if shutil.which('systemd-detect-virt'):
+            out = subprocess.check_output(['systemd-detect-virt'], timeout=5,
+                                          stderr=subprocess.DEVNULL).decode().strip()
+            if out and out != 'none':
+                evidence.append(f"systemd-detect-virt={out}")
+                hypervisor = hypervisor or out
+    except Exception:
+        pass
+
+    # 3. CPU hypervisor flag - last resort, because it says "virtualized"
+    #    without naming anything.
+    try:
+        with open('/proc/cpuinfo', 'r', encoding='utf-8', errors='ignore') as f:
+            flags = ''
+            for line in f:
+                if line.startswith('flags'):
+                    flags = line
+                    break
+        if 'hypervisor' in flags:
+            evidence.append('cpuinfo: hypervisor flag set')
+            hypervisor = hypervisor or match(platform.machine()) or 'Unknown hypervisor'
+    except Exception:
+        pass
+
+    # 4. Windows: Win32_ComputerSystem model/manufacturer.
+    if platform_kind() == 'windows':
+        for prop in ('Model', 'Manufacturer'):
+            try:
+                out = subprocess.check_output(
+                    f'powershell -NoProfile -Command "(Get-CimInstance Win32_ComputerSystem).{prop}"',
+                    shell=True, timeout=10, stderr=subprocess.DEVNULL,
+                ).decode('utf-8', errors='ignore').strip()
+                value = out.splitlines()[-1].strip() if out else ''
+            except Exception:
+                continue
+            hit = match(value)
+            if hit:
+                hypervisor = hypervisor or hit
+                evidence.append(f"Win32_ComputerSystem.{prop}={value}")
+
+    # WSL and containers are virtualized environments too.
+    try:
+        if 'microsoft' in (platform.release() or '').lower():
+            hypervisor = hypervisor or 'WSL'
+            evidence.append('kernel release contains microsoft (WSL)')
+    except Exception:
+        pass
+
+    return {
+        'is_vm': bool(hypervisor),
+        'hypervisor': hypervisor,
+        'details': '; '.join(evidence),
+    }
+
+
+# ============================================================
 def get_system_info():
     caps = capability_profile()
     info = {
         'device_id': DEVICE_ID,
         'hostname': platform.node() or socket.gethostname() or 'Unknown',
         'ip': get_local_ip(),
-        'os': caps['platform'],
+        # A real OS identity, not the platform kind. caps['platform'] stays
+        # available under 'platform' for anything that relied on it.
+        'os': get_os_name(),
+        'platform': caps['platform'],
         'os_version': platform.platform(),
+        'virtualization': detect_virtualization(),
         'cpu': get_cpu_info(),
         'ram': get_ram_info(),
         'ram_total': get_ram_total_gb(),

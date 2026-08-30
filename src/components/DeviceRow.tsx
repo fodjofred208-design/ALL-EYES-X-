@@ -51,6 +51,11 @@ const DeviceRow: React.FC<DeviceRowProps> = ({
   const country = typeof device.country === 'string' ? device.country.trim() : '';
   const location = [city, country].filter(v => v && v !== 'Unknown').join(', ');
   const mac = typeof device.mac === 'string' ? device.mac : '';
+  // The agent now sends a real OS identity; older agents only sent the platform
+  // kind, so fall back to that rather than printing 'Unknown'.
+  const osLabel = [device.os_name, device.os].find(
+    v => typeof v === 'string' && v.trim() && v.trim() !== 'Unknown'
+  ) as string | undefined;
 
   const handleClick = () => {
     if (onClick && !deleting) onClick(device.id);
@@ -109,7 +114,9 @@ const DeviceRow: React.FC<DeviceRowProps> = ({
         <td className="px-4 py-3 whitespace-nowrap">
           <div className="flex items-center gap-3">
             <div className={`relative flex-shrink-0 ${isOnline ? 'text-green-400' : 'text-slate-600'}`}>
-              <DeviceIcon hostname={device.hostname} os={device.os_name} size={32} />
+              {/* Offline shows a neutral monitor; the moment the agent reports in,
+                  the icon becomes the device's own operating system. */}
+              <DeviceIcon hostname={device.hostname} os={osLabel} size={32} online={isOnline} />
               <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-900 ${isOnline ? 'bg-green-400' : 'bg-slate-600'}`} />
             </div>
             <div className="min-w-0">
@@ -131,8 +138,10 @@ const DeviceRow: React.FC<DeviceRowProps> = ({
         {/* OS column */}
         <td className="px-4 py-3 whitespace-nowrap">
           <span className="inline-flex items-center gap-1.5 text-sm text-slate-300">
-            <DeviceIcon hostname={device.hostname} os={device.os_name} size={16} className="text-slate-500 flex-shrink-0" />
-            <span className="truncate max-w-[140px]">{device.os_name || 'Unknown'}</span>
+            <DeviceIcon hostname={device.hostname} os={osLabel} size={16} online={isOnline} className="text-slate-500 flex-shrink-0" />
+            <span className={`truncate max-w-[140px] ${osLabel ? '' : 'text-slate-600 italic'}`}>
+              {osLabel || 'Not reported'}
+            </span>
           </span>
         </td>
 

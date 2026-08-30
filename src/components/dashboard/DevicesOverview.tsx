@@ -32,7 +32,7 @@ const DevicesOverview: React.FC = () => {
       actions={
         <button
           type="button"
-          onClick={() => navigate('/devices')}
+          onClick={() => navigate('/devices', { state: { from: 'dashboard' } })}
           className="text-[9px] font-orbitron uppercase tracking-widest text-green-400 hover:text-green-300"
         >
           View all devices

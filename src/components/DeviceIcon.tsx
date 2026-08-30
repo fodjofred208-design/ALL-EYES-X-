@@ -23,10 +23,22 @@ const DeviceIcon: React.FC<DeviceIconProps> = ({
   const combined = (os + ' ' + hostname).toLowerCase();
 
   const isWindows = combined.includes('windows');
-  const isLinux =
-    combined.includes('linux') || combined.includes('ubuntu') || combined.includes('debian') ||
-    combined.includes('kali') || combined.includes('centos') || combined.includes('fedora') ||
-    combined.includes('arch') || combined.includes('mint') || combined.includes('redhat');
+  // Distribution names an agent can legitimately report. Kept as one list so a
+  // new distro is a one-word change rather than another branch.
+  const LINUX_DISTROS = [
+    'linux', 'ubuntu', 'debian', 'kali', 'centos', 'fedora', 'arch', 'archlinux',
+    'mint', 'redhat', 'red hat', 'rhel', 'gentoo', 'mandriva', 'pclinuxos',
+    'mageia', 'oracle', 'opensuse', 'suse', 'sled', 'turbolinux', 'xandros',
+    'alpine', 'rocky', 'almalinux', 'manjaro', 'elementary', 'zorin', 'pop!_os',
+    'slackware', 'clearos', 'scientific linux', 'amazon linux', 'endeavour',
+    'nixos', 'void', 'parrot', 'tails', 'raspbian', 'raspberry pi os',
+  ];
+  const isLinux = LINUX_DISTROS.some(name => combined.includes(name));
+  // Unix family that is not Linux - distinct kernels, so they get their own mark.
+  const isSolaris = /solaris|sunos|illumos|smartos|omnios|openindiana/.test(combined);
+  const isBsd = /freebsd|openbsd|netbsd|dragonflybsd|\bbsd\b/.test(combined);
+  // IBM platforms: AIX on POWER, z/OS on mainframe.
+  const isIbm = /\baix\b|z\/os|os\/390|os400|ibm i\b|iseries|as\/400/.test(combined);
   const isMac = combined.includes('darwin') || combined.includes('macos') || combined.includes('mac');
   const isAndroid = combined.includes('android');
   const isIos = combined.includes('ios') || combined.includes('iphone') || combined.includes('ipad');
@@ -123,6 +135,50 @@ const DeviceIcon: React.FC<DeviceIconProps> = ({
         <rect x="3" y="4" width="18" height="12" rx="2" stroke="currentColor" strokeWidth="1.5" strokeDasharray="3 2" fill="currentColor" fillOpacity="0.1" />
         <rect x="7" y="7.5" width="10" height="5" rx="1" stroke="currentColor" strokeWidth="1.3" />
         <path d="M8 20h8M12 16v4" stroke="currentColor" strokeWidth="1.4" />
+      </svg>
+    );
+  }
+
+  if (isSolaris) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+        <circle cx="12" cy="12" r="4.4" fill="currentColor" opacity="0.9" />
+        {[0, 45, 90, 135, 180, 225, 270, 315].map(a => (
+          <line
+            key={a}
+            x1="12" y1="12" x2={12 + 8.6 * Math.cos((a * Math.PI) / 180)}
+            y2={12 + 8.6 * Math.sin((a * Math.PI) / 180)}
+            stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" opacity="0.8"
+          />
+        ))}
+      </svg>
+    );
+  }
+
+  if (isBsd) {
+    // Daemon-horn silhouette.
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+        <path d="M6.4 5.2c1.6 1.4 2.2 3 2.1 4.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        <path d="M17.6 5.2c-1.6 1.4-2.2 3-2.1 4.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        <ellipse cx="12" cy="13.4" rx="6.2" ry="5.6" fill="currentColor" opacity="0.85" />
+        <circle cx="9.9" cy="12.2" r="1.3" fill="#0b0f1a" opacity="0.8" />
+        <circle cx="14.1" cy="12.2" r="1.3" fill="#0b0f1a" opacity="0.8" />
+        <path d="M9.4 16.2h5.2" stroke="#0b0f1a" strokeWidth="1.2" strokeLinecap="round" opacity="0.6" />
+      </svg>
+    );
+  }
+
+  if (isIbm) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
+        {[5, 8, 11, 14, 17].map(y => (
+          <g key={y}>
+            <rect x="3" y={y} width="5" height="1.6" rx="0.5" fill="currentColor" opacity="0.9" />
+            <rect x="9.5" y={y} width="5" height="1.6" rx="0.5" fill="currentColor" opacity="0.9" />
+            <rect x="16" y={y} width="5" height="1.6" rx="0.5" fill="currentColor" opacity="0.9" />
+          </g>
+        ))}
       </svg>
     );
   }
