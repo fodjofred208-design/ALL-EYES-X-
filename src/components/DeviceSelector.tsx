@@ -3,6 +3,7 @@ import { Monitor, ChevronDown, Globe, Wifi } from 'lucide-react';
 import DeviceIcon from './DeviceIcon';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 const ALL_EYES = 'ALL EYES STAT';
 
@@ -10,6 +11,7 @@ const DeviceSelector = () => {
   const { devices, selectedDevice, setSelectedDeviceId } = useDevices();
   const [isOpen, setIsOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
 
   // Click anywhere outside the dropdown to dismiss it.
   useEffect(() => {
@@ -30,9 +32,11 @@ const DeviceSelector = () => {
 
   const onlineCount = devices.filter(d => d.status === 'online').length;
 
-  const pick = (id: string | null) => {
+  const pick = (id: string | null, openDetail = false) => {
     setSelectedDeviceId(id);
     setIsOpen(false);
+    // Clicking a device takes you straight to its live detail page.
+    if (openDetail && id) navigate(`/device/${id}`);
   };
 
   return (
@@ -104,7 +108,7 @@ const DeviceSelector = () => {
                     return (
                       <button
                         key={device.id}
-                        onClick={() => pick(device.id)}
+                        onClick={() => pick(device.id, true)}
                         className={`w-full p-3 flex items-center gap-3 hover:bg-green-500/10 transition-all text-left border-b border-white/5 last:border-0 ${selectedDevice?.id === device.id ? 'bg-green-500/5' : ''}`}
                       >
                          <div className={`p-1.5 rounded-lg ${online ? 'bg-green-500/10 text-green-500' : 'bg-slate-500/10 text-slate-500'}`}>
