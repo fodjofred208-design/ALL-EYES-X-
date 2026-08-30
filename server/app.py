@@ -1330,6 +1330,30 @@ def api_register():
 # ============================================================
 # Helper: Build device list for dashboard
 # ============================================================
+# ============================================================
+# WELL-KNOWN PORTS
+#
+# Maps a listening port to the service/protocol it normally carries. Used to
+# build the Protocol Statistics panel from the ports agents actually report.
+# Only ports an agent really reported ever appear in the output.
+# ============================================================
+WELL_KNOWN_PORTS = {
+    20: 'FTP', 21: 'FTP', 22: 'SSH', 23: 'Telnet', 25: 'SMTP',
+    53: 'DNS', 67: 'DHCP', 68: 'DHCP', 69: 'TFTP',
+    80: 'HTTP', 110: 'POP3', 111: 'RPC', 123: 'NTP',
+    135: 'MSRPC', 137: 'NetBIOS', 138: 'NetBIOS', 139: 'NetBIOS',
+    143: 'IMAP', 161: 'SNMP', 162: 'SNMP',
+    389: 'LDAP', 443: 'HTTPS', 445: 'SMB', 465: 'SMTPS',
+    514: 'Syslog', 587: 'SMTP', 631: 'IPP', 636: 'LDAPS',
+    993: 'IMAPS', 995: 'POP3S',
+    1433: 'MSSQL', 1521: 'Oracle', 1723: 'PPTP',
+    3306: 'MySQL', 3389: 'RDP', 5432: 'PostgreSQL',
+    5900: 'VNC', 5901: 'VNC', 5985: 'WinRM', 5986: 'WinRM',
+    6379: 'Redis', 8080: 'HTTP-Alt', 8443: 'HTTPS-Alt',
+    9200: 'Elasticsearch', 11211: 'Memcached', 27017: 'MongoDB',
+}
+
+
 def get_alerts_grouped(device_ids):
     """Fetch alerts for many devices in ONE query.
 
@@ -1951,13 +1975,50 @@ def api_dashboard():
         ]
 
         # ------------------------------------------------------------
-        # Protocols
+        # Protocols / services
         #
-        # traffic_samples currently has NO protocol column.
-        # Do not query one.
+        # Derived from the ports the agents actually report in
+        # telemetry.open_ports. We do not have a packet capture, so this is a
+        # service breakdown of listening ports - not a traffic share - and it is
+        # labelled that way in the UI. Nothing here is invented: a protocol only
+        # appears if some agent really reported a matching port.
         # ------------------------------------------------------------
 
-        protocol_rows = []
+        port_rows = _q("SELECT device_id, open_ports FROM telemetry")
+        protocol_counts = {}
+        for row in port_rows:
+            raw = row.get('open_ports') or '[]'
+            try:
+                ports = json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                ports = []
+            if not isinstance(ports, list):
+                continue
+            seen_for_device = set()
+            for port in ports:
+                try:
+                    port = int(port)
+                except (TypeError, ValueError):
+                    continue
+                svc = WELL_KNOWN_PORTS.get(port)
+                if not svc or svc in seen_for_device:
+                    continue
+                seen_for_device.add(svc)
+                protocol_counts[svc] = protocol_counts.get(svc, 0) + 1
+
+        total_services = sum(protocol_counts.values())
+        protocol_rows = [
+            {
+                'name': name,
+                # share of all service observations across reporting agents
+                'percent': round(count / total_services * 100, 1) if total_services else 0,
+                'devices': count,
+                'source': 'listening ports reported by agents',
+            }
+            for name, count in sorted(
+                protocol_counts.items(), key=lambda kv: kv[1], reverse=True
+            )
+        ]
 
         # ------------------------------------------------------------
         # Alert trend by severity, grouped by day. Real counts only -
