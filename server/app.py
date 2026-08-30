@@ -4768,24 +4768,36 @@ RETENTION_INTERVAL_SECONDS = 3600
 
 
 def prune_old_rows():
-    """Trim the oldest rows from each unbounded table."""
+    """Trim the oldest rows from each unbounded table.
+
+    Each table is pruned independently. The loop used to share one try block, so
+    a single missing table - an operator upgrading from a database created before
+    that table existed, for instance - raised out of the whole sweep and silently
+    disabled retention for every other table from then on.
+    """
     conn = get_db()
     removed = {}
+    skipped = []
     try:
         for table, limit in RETENTION_LIMITS.items():
-            cur = conn.execute(
-                f"DELETE FROM {table} WHERE id NOT IN "
-                f"(SELECT id FROM {table} ORDER BY id DESC LIMIT ?)",
-                (limit,),
-            )
-            if cur.rowcount:
-                removed[table] = cur.rowcount
+            try:
+                cur = conn.execute(
+                    f"DELETE FROM {table} WHERE id NOT IN "
+                    f"(SELECT id FROM {table} ORDER BY id DESC LIMIT ?)",
+                    (limit,),
+                )
+                if cur.rowcount:
+                    removed[table] = cur.rowcount
+            except sqlite3.OperationalError as e:
+                skipped.append(f'{table} ({e})')
         conn.commit()
     finally:
         conn.close()
     if removed:
         detail = ', '.join(f'{t}=-{n}' for t, n in removed.items())
         print(f"[RETENTION] pruned {detail}")
+    if skipped:
+        print(f"[RETENTION] skipped, still pruned the rest: {'; '.join(skipped)}")
     return removed
 
 
