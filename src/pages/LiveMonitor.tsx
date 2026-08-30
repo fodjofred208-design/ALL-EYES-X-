@@ -668,7 +668,7 @@ const LiveMonitor = () => {
               className="w-full flex items-center justify-between group"
             >
               <span className="flex items-center gap-2 text-[10px] font-orbitron uppercase tracking-[0.25em] text-green-400 group-hover:text-green-300">
-                <Monitor size={14} /> More Feature — Multi-Device Wall
+                <Monitor size={14} /> Multi-Monitor
               </span>
               <span className="text-[9px] font-mono-data text-slate-500 group-hover:text-green-400">
                 open full page →

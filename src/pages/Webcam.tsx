@@ -404,7 +404,7 @@ const Webcam = () => {
           <div className="glass-card p-4 border-green-500/10">
             <button onClick={() => navigate('/device-wall')} className="w-full flex items-center justify-between group">
               <span className="flex items-center gap-2 text-[10px] font-orbitron uppercase tracking-[0.25em] text-green-400 group-hover:text-green-300">
-                <Camera size={14} /> More Feature — Multi-Camera Wall
+                <Camera size={14} /> Multi-Cam
               </span>
               <span className="text-[9px] font-mono-data text-slate-500 group-hover:text-green-400">
                 open full page →

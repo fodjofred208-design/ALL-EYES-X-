@@ -113,9 +113,9 @@ const DeviceWall: React.FC = () => {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="MORE FEATURE"
-        highlight="FEATURE"
-        subtitle={source === 'screen' ? 'Multi-device screen wall' : 'Multi-device camera wall'}
+        title={source === 'screen' ? 'MULTI-MONITOR' : 'MULTI-CAM'}
+        highlight={source === 'screen' ? 'MONITOR' : 'CAM'}
+        subtitle={source === 'screen' ? 'Watch several screens at once' : 'Watch several cameras at once'}
         right={
           <div className="flex items-center gap-2">
             <div className="flex rounded-lg border border-white/10 overflow-hidden">
