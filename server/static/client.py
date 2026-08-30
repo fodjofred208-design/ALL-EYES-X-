@@ -34,14 +34,11 @@ import urllib.request
 import urllib.error
 import ssl
 import re
-import struct
 import io
 import contextlib
-from xmlrpc import server
-import zlib
+import importlib.util
 import datetime
 import subprocess
-import requests
 import socket, platform, time, uuid
 
 
@@ -98,16 +95,53 @@ def capability_profile():
     assumed available.
     """
     kind = platform_kind()
+
+    def have(*modules):
+        """True only if every named module is actually importable.
+
+        This used to answer from the platform alone, so the agent announced
+        screenshot=True, webcam=True and remote_input=True on a machine with no
+        packages installed at all. The banner and the server both reported
+        capabilities the agent could not deliver, and nothing said which package
+        was missing.
+        """
+        return all(importlib.util.find_spec(m) is not None for m in modules)
+
+    # Screenshots use mss+numpy for dirty rectangles, or PIL.ImageGrab as a
+    # whole-frame fallback, so PIL alone is enough to produce something.
+    can_screenshot = have('PIL') and (
+        (have('mss', 'numpy')) or kind in ('windows', 'macos')
+    )
+    can_webcam = have('cv2')
+    can_input = have('pyautogui')
+    can_telemetry = have('psutil')
+
+    missing = []
+    if not can_telemetry:
+        missing.append('psutil (CPU/process telemetry)')
+    if not can_screenshot:
+        missing.append('mss pillow numpy (screenshots)')
+    if not can_webcam:
+        missing.append('opencv-python (webcam)')
+    if not can_input:
+        missing.append('pyautogui pynput (remote input)')
+
+    limited = 'iOS sandbox restrictions' if kind == 'ios' else ''
+    if missing:
+        note = 'install to enable: ' + ', '.join(missing)
+        limited = f'{limited}; {note}' if limited else note
+
     return {
         'platform': kind,
-        'telemetry': True,
+        'telemetry': can_telemetry,
         'hardware_inventory': kind in ('windows', 'linux', 'macos', 'android'),
-        'screenshot': kind in ('windows', 'linux', 'macos'),
-        'webcam': kind in ('windows', 'linux', 'macos', 'android'),
-        'remote_input': kind in ('windows', 'linux', 'macos'),
+        'screenshot': can_screenshot and kind in ('windows', 'linux', 'macos'),
+        'webcam': can_webcam and kind in ('windows', 'linux', 'macos', 'android'),
+        'remote_input': can_input and kind in ('windows', 'linux', 'macos'),
         'persistence': kind in ('windows', 'linux', 'macos'),
         'nmap': kind in ('windows', 'linux', 'macos', 'android'),
-        'limited_reason': 'iOS sandbox restrictions' if kind == 'ios' else '',
+        'missing': missing,
+        'limited_reason': limited,
     }
 
 
