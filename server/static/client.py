@@ -736,11 +736,21 @@ def collect_hardware_inventory():
     """Collect complete hardware inventory for device registration."""
     inventory = {
         'os': {
-            'name': platform_kind(),
+            # get_os_name(), not platform_kind(): this block is written straight
+            # into os_info, so sending the bare platform kind here overwrote the
+            # real name registration had just stored - the Devices table showed
+            # "linux" instead of "Debian GNU/Linux 12 (bookworm)" after the first
+            # hardware upload.
+            'name': get_os_name(),
             'version': platform.platform(),
             'architecture': platform.machine(),
             'kernel_version': platform.version(),
             'boot_time': get_boot_time(),
+            # The Device Detail panel displays both of these and the server reads
+            # them from this block, but they were never sent, so the fields
+            # stayed empty on every device.
+            'install_date': get_os_install_date(),
+            'language': get_os_language(),
         },
         'capabilities': capability_profile(),
         'processor': collect_processor_info(),

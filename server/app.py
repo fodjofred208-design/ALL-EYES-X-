@@ -583,6 +583,17 @@ def init_db():
     ensure_column('devices', 'hypervisor', "TEXT DEFAULT ''")
     ensure_column('devices', 'vm_details', "TEXT DEFAULT ''")
     ensure_column('devices', 'agent_version', "TEXT DEFAULT ''")
+    # Telemetry the agent already collects and sends but that was dropped on the
+    # floor: these six never had a column, so security-relevant signal
+    # (suspicious processes, critical CVEs, disk encryption, USB devices) was
+    # discarded on every heartbeat.
+    ensure_column('telemetry', 'processes', "TEXT DEFAULT '[]'")
+    ensure_column('telemetry', 'suspicious_processes', "TEXT DEFAULT '[]'")
+    ensure_column('telemetry', 'usb_devices', "TEXT DEFAULT '[]'")
+    ensure_column('telemetry', 'critical_cves', "TEXT DEFAULT '[]'")
+    ensure_column('telemetry', 'encrypted_disk', 'INTEGER DEFAULT -1')
+    ensure_column('telemetry', 'net_down_bps', 'REAL DEFAULT 0')
+    ensure_column('telemetry', 'net_up_bps', 'REAL DEFAULT 0')
     ensure_column('alerts', 'severity', "TEXT DEFAULT 'info'")
     ensure_column('alerts', 'title', "TEXT DEFAULT ''")
     ensure_column('alerts', 'category', "TEXT DEFAULT 'system'")
@@ -719,6 +730,19 @@ def detect_hardware_drift(device_id, resolved):
     activity('HARDWARE DRIFT', device_id=device_id[:8], host=hostname, changes=len(changes))
     print(f"[!] Hardware drift on {hostname}: {detail}")
     return changes
+
+
+def _parse_json_list(raw):
+    """Decode a JSON list column, tolerating NULL, '' and malformed values."""
+    if raw in (None, ''):
+        return []
+    if isinstance(raw, list):
+        return raw
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, list) else []
+    except (TypeError, ValueError):
+        return []
 
 
 def save_device_extras(device_id, device_info):
@@ -1066,11 +1090,30 @@ def persist_telemetry(device_id, data):
             """Use the incoming value only when the payload actually has the key."""
             return new_value if key in data and data[key] is not None else prev.get(key, default)
 
+        def json_list(key, cap=None):
+            """Serialise a reported list to JSON, keeping the last good value
+            when this heartbeat did not carry the key."""
+            if key not in data or data[key] is None:
+                return prev.get(key, '[]')
+            value = data[key]
+            if isinstance(value, str):
+                return value
+            if not isinstance(value, list):
+                value = [value]
+            if cap:
+                value = value[:cap]
+            try:
+                return json.dumps(value)
+            except (TypeError, ValueError):
+                return '[]'
+
         conn.execute("""
             INSERT OR REPLACE INTO telemetry
             (device_id, cpu, ram, disk, net_sent, net_recv, firewall, antivirus,
-             open_ports, boot_time, logged_user, gpu, wifi, battery, malware_detected, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             open_ports, boot_time, logged_user, gpu, wifi, battery, malware_detected,
+             processes, suspicious_processes, usb_devices, critical_cves,
+             encrypted_disk, net_down_bps, net_up_bps, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             device_id,
             float(pick('cpu', data.get('cpu'), 0) or 0),
@@ -1088,6 +1131,18 @@ def persist_telemetry(device_id, data):
             battery_value if 'battery' in data else prev.get('battery', -1),
             (1 if data.get('malware_detected') else 0) if 'malware_detected' in data
                 else prev.get('malware_detected', 0),
+            # List fields are stored as JSON. The process list is capped: an
+            # agent on a busy box can report hundreds of rows every 5 seconds,
+            # and uncapped that is megabytes per device per minute.
+            json_list('processes', 200),
+            json_list('suspicious_processes', 100),
+            json_list('usb_devices', 100),
+            json_list('critical_cves', 200),
+            bool_int(pick('encrypted_disk', data.get('encrypted_disk'), -1)),
+            float((data.get('net_speed') or {}).get('download_bps') or 0)
+                if 'net_speed' in data else float(prev.get('net_down_bps') or 0),
+            float((data.get('net_speed') or {}).get('upload_bps') or 0)
+                if 'net_speed' in data else float(prev.get('net_up_bps') or 0),
             now_iso,
         ))
 
@@ -4011,6 +4066,13 @@ def api_device_detail_full(device_id):
             'wifi': tel_data.get('wifi'),
             'battery': tel_data.get('battery'),
             'malware_detected': tel_data.get('malware_detected'),
+            'encrypted_disk': tel_data.get('encrypted_disk'),
+            'net_down_bps': tel_data.get('net_down_bps'),
+            'net_up_bps': tel_data.get('net_up_bps'),
+            'processes': _parse_json_list(tel_data.get('processes')),
+            'suspicious_processes': _parse_json_list(tel_data.get('suspicious_processes')),
+            'usb_devices': _parse_json_list(tel_data.get('usb_devices')),
+            'critical_cves': _parse_json_list(tel_data.get('critical_cves')),
             'updated_at': tel_data.get('updated_at'),
         },
     }), 200

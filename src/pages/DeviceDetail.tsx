@@ -357,8 +357,51 @@ const DeviceDetail: React.FC = () => {
                   ? telemetry.open_ports.join(', ')
                   : 'None reported'
               } mono />
+              {/* Reported by the agent on every heartbeat. These were collected
+                  and sent for a long time but had no column to land in, so they
+                  were discarded and never shown. */}
+              <Field label="Disk Encryption" value={
+                telemetry.encrypted_disk === 1 ? 'Encrypted'
+                  : telemetry.encrypted_disk === 0 ? 'Not encrypted'
+                  : ''
+              } />
+              <Field label="Link Speed" value={
+                telemetry.net_down_bps || telemetry.net_up_bps
+                  ? `${Math.round(Number(telemetry.net_down_bps ?? 0) / 1000)} kb/s down · ${Math.round(Number(telemetry.net_up_bps ?? 0) / 1000)} kb/s up`
+                  : ''
+              } mono />
+              <Field label="Processes" value={
+                Array.isArray(telemetry.processes) && telemetry.processes.length
+                  ? `${telemetry.processes.length} running`
+                  : ''
+              } />
+              <Field label="USB Devices" value={
+                Array.isArray(telemetry.usb_devices)
+                  ? (telemetry.usb_devices.length ? `${telemetry.usb_devices.length} attached` : 'None attached')
+                  : ''
+              } />
+              <Field label="Critical CVEs" value={
+                Array.isArray(telemetry.critical_cves)
+                  ? (telemetry.critical_cves.length ? `${telemetry.critical_cves.length} reported` : 'None reported')
+                  : ''
+              } />
               <Field label="Last Heartbeat" value={telemetry.updated_at as string} mono />
             </div>
+
+            {Array.isArray(telemetry.suspicious_processes) && telemetry.suspicious_processes.length > 0 && (
+              <div className="mt-4 p-3 rounded-lg bg-red-500/[0.07] border border-red-500/20">
+                <p className="text-[10px] uppercase tracking-wider text-red-400 mb-2">
+                  Suspicious Processes ({telemetry.suspicious_processes.length})
+                </p>
+                <ul className="space-y-1">
+                  {telemetry.suspicious_processes.slice(0, 20).map((proc: any, i: number) => (
+                    <li key={i} className="text-[11px] font-mono text-red-300 truncate">
+                      {typeof proc === 'string' ? proc : JSON.stringify(proc)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </Card>
