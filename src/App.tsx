@@ -38,17 +38,23 @@ import Layout from './components/Layout';
 
 const morphEase: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
-const Panel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+const Panel: React.FC<{ children: React.ReactNode; morph?: number }> = ({
+  children,
+  morph = 0.5,
+}) => (
   <motion.div
-    initial={{ opacity: 0, y: 16, scale: 0.98 }}
-    animate={{ opacity: 1, y: 0, scale: 1 }}
-    exit={{ opacity: 0, y: -12, scale: 1.01 }}
-    transition={{ duration: 0.5, ease: morphEase }}
+    initial={{ opacity: 0, y: 16, scale: 0.98, filter: 'blur(6px)' }}
+    animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+    exit={{ opacity: 0, y: -12, scale: 1.01, filter: 'blur(6px)' }}
+    transition={{ duration: morph, ease: morphEase }}
     className="panel-shine w-full min-h-screen pt-20 pb-16 px-4 md:px-8 relative z-10"
   >
     {children}
   </motion.div>
 );
+
+/** The three primary intelligence views use a slower, cleaner 3s morph. */
+const MORPH_SLOW = 3;
 
 const LoadingScreen: React.FC<{ onComplete: () => void }> = ({ onComplete }) => {
   const [progress, setProgress] = useState(0);
@@ -204,8 +210,8 @@ const AppContent: React.FC = () => {
           }
         />
               <Route path="/analytics" element={<Panel><Analytics /></Panel>} />
-              <Route path="/alerts" element={<Panel><Scoped><AlertCenter /></Scoped></Panel>} />
-              <Route path="/chart-analysis" element={<Panel><Scoped><ChartAnalysis /></Scoped></Panel>} />
+              <Route path="/alerts" element={<Panel morph={MORPH_SLOW}><Scoped><AlertCenter /></Scoped></Panel>} />
+              <Route path="/chart-analysis" element={<Panel morph={MORPH_SLOW}><Scoped><ChartAnalysis /></Scoped></Panel>} />
               <Route path="/devices" element={<Panel><Devices /></Panel>} />
               <Route path="/device/:id" element={<Panel><DeviceDetail /></Panel>} />
               <Route path="/live_monitor" element={<Panel><LiveMonitor /></Panel>} />

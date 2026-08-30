@@ -89,8 +89,15 @@ const DashboardPage: React.FC = () => {
     /* pt-20 clears the fixed h-16 top bar; every other route gets this from the
        <Panel> wrapper, but the Dashboard route supplies its own provider instead
        so it needs the offset here. Without it the COMMAND CENTER title sat
-       underneath the header bar. */
-    <div className="relative space-y-4 pt-20 pb-16 px-4 md:px-8">
+       underneath the header bar.
+       The 3s morph matches Alerts and Chart Analysis. */
+    <motion.div
+      initial={{ opacity: 0, y: 16, scale: 0.98, filter: 'blur(6px)' }}
+      animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+      exit={{ opacity: 0, y: -12, scale: 1.01, filter: 'blur(6px)' }}
+      transition={{ duration: 3, ease: [0.22, 1, 0.36, 1] }}
+      className="relative space-y-4 pt-20 pb-16 px-4 md:px-8"
+    >
       <AmbientBackground variant="squares" className="fixed inset-0 -z-10" />
       <div className="aeyes-grain" />
 
@@ -198,7 +205,7 @@ const DashboardPage: React.FC = () => {
         <ShieldCheck size={10} className="inline mr-1" />
         Auto-refreshes every 5s · engine computes · frontend renders only
       </p>
-    </div>
+    </motion.div>
   );
 };
 
