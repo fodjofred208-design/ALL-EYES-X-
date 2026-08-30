@@ -478,15 +478,38 @@ the selection. The badge next to the title shows the active scope.
 
 ## 15. More Feature panels
 
-Live Monitor, Touch Monitor and Webcam each have a **More Feature** panel for
-watching several devices at once:
+Each monitoring page has a square **Multi-\*** tile that opens the full
+multi-device page:
 
-- add or remove devices from the wall with `+ hostname` / `− hostname`
-- each tile shows the device's newest frame
-- **Focus** switches the main view to that device
+| Page          | Tile          | Opens          |
+|---------------|---------------|----------------|
+| Live Monitor  | Multi-Monitor | `/device-wall` |
+| Webcam        | Multi-Cam     | `/device-wall` |
+| Touch Control | Multi-Touch   | `/device-wall` |
+| Terminal      | Multi-Shell   | `/multi-shell` |
 
-Terminal deliberately has **no** More Feature panel — it is a special case
-because it already has its own multi-device execution mode.
+### Resizing the tiles
+
+Every tile on those two pages can be resized by dragging, the same way you drag
+the corner of a shape in a drawing program:
+
+- **8 handles** — 4 corners and 4 edges. They appear when the pointer is over the
+  tile.
+- **Drag** a handle to make that tile bigger or smaller. A live `width × height`
+  readout follows the drag.
+- **Double-click** any handle to put that one tile back to its default size.
+- **Reset** (top right of the page) returns every tile on the page to default.
+- Sizes are remembered **per device** in `localStorage`, and Multi-Shell keeps
+  Main and Solo layouts separately, so switching mode does not clobber them.
+- Works with touch as well as a mouse.
+
+Both pages lay tiles out with flex-wrap rather than a CSS grid: a grid stretches
+every cell to the tallest in its row, which would silently undo a manual resize.
+Default sizes are derived from the row's measured width, so a wall nobody has
+resized still reads as the same 1 / 2 / 3-across layout.
+
+Gestures still available on a wall tile: **triple click** zooms in, **double
+click** zooms out, clicking the hostname sets it as Target Node.
 
 ---
 
@@ -851,9 +874,14 @@ client/client_termux.py      149 lines   superseded by client/client.py
 npm run dev
 npm run build
 npm run typecheck
+npm test
 python server\app.py
 python client\client.py http://127.0.0.1:5000
 ```
+
+`npm test` runs the vitest suite in jsdom. It currently covers `ResizableBox`
+with real pointer events: drag deltas per handle, min/max clamping, pixel
+rounding, the reset gesture, and that hidden handles do not swallow clicks.
 
 ---
 
@@ -870,3 +898,78 @@ Download ZIP:
 ```text
 https://github.com/fodjofred208-design/ALL-EYES-X-/archive/refs/heads/arena/01a03556-all-eyes-x.zip
 ```
+
+---
+
+## 28. Deep scan — bugs found and fixed
+
+Found by driving the real API end to end, not by reading the code alone.
+
+**Protocol Statistics rendered empty.** `protocol_rows` builds
+`{name, percent, devices, source}`, but the response serializer read
+`row['protocol']` and `row['value']` — neither key exists — so the API returned
+`[{name: null, value: null}, ...]`. `ProtocolChart` plots `dataKey="name"`
+against `dataKey="percent"`, so the bars were empty even though the underlying
+data was correct. Verified live: ports `[22, 80, 443, 3389]` now return
+SSH / HTTP / HTTPS / RDP at 25.0 % each.
+
+**`daily_stats` was created and read but never written** — 0 rows, permanently.
+`_series('score')` therefore always returned `[]`, `charts.security` was empty,
+`DashboardContext` fell back to an empty threat series, and the **Threat Chart
+could never render at all**. `snapshot_daily_stats()` now runs at startup and on
+the existing hourly thread. Everything it writes is measured:
+
+- `alerts` and `bandwidth` are aggregated per day from the real event tables
+  (`alerts.timestamp`, `traffic_samples.ts`), which are historically accurate, so
+  past days backfill exactly;
+- `score` and `avg_cpu` describe the fleet at a moment in time and telemetry
+  keeps no history, so they are captured only for days this server actually
+  observes and left `NULL` otherwise;
+- today's `score` applies the same penalties the security panel applies, so the
+  chart and the panel cannot disagree.
+
+**Unmeasured columns were landing as 0.** `daily_stats` declares `DEFAULT 0`, so
+an alerts-only insert gave past days `score = 0` — indistinguishable from a real
+score of 0, and the chart drew it as a measurement. The upsert now writes
+explicit `NULL`s and `_series` skips them, so a day nobody watched is absent from
+the chart instead of being drawn as a fabricated zero.
+
+**Two history queries returned the oldest window.** `_series` used
+`ORDER BY date ASC LIMIT 30` and `alert_trend` used `ORDER BY d ASC LIMIT 120`,
+so once history passed the limit the charts froze on the oldest days and never
+updated again. Both now order `DESC` and reverse. Verified with 284
+(day, severity) groups: `alert_trend` returns `2026-02-11 … 2026-07-12` and no
+longer starts at `2026-01-01`.
+
+**Touch Monitor polled `/api/screenshot` every 100 ms with no in-flight guard** —
+the only frame poller without one — so slow responses stacked. It now uses the
+same guard Live Monitor and Webcam already had.
+
+**No frame poller paused in a hidden tab.** A backgrounded mirror kept pulling
+full screenshots at up to 30/s for nobody. All three now go through the existing
+`usePolling` hook.
+
+**Four `fetch` calls omitted `credentials: 'include'`** (`/api/touch` and webcam
+start/stop/switch). Harmless same-origin, but `api.ts` documents a cross-origin
+`VITE_API_BASE` mode where all four would 401 against `@login_required` routes.
+A full re-scan now reports zero `fetch` calls without credentials.
+
+**Removed three unreachable "More Feature" panels** (Live Monitor, Webcam, Touch
+Monitor). `setShowMoreFeature` had no call site anywhere in `src/`, so they could
+never render, and their `watched` / `toggleWatched` state was used only inside
+them. `noUnusedLocals` is off in `tsconfig.json`, which is why the unused setter
+was never flagged. The reachable Multi-\* pages are `/device-wall` and
+`/multi-shell`.
+
+### Checked and found correct
+
+- All 15 unauthenticated routes: the auth routes, the four agent routes
+  `client.py` actually calls, touch poll/ack, and static files.
+- Socket event names match in both directions — every `socket.on` in the frontend
+  has a `socketio.emit` on the backend.
+- All four queued task types (`command`, `notify_user`, `nmap_scan`,
+  `webcam_command`) are handled by the agent.
+- Command queue → heartbeat delivery → result POST → frontend poll works end to
+  end, and Multi-Shell's completion predicate is satisfied.
+- No-frame and unknown-device paths return clean 404 JSON, not a stack trace.
+- Fresh-database startup completes with 25 tables and no crash.
