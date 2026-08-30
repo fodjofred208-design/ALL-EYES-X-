@@ -57,6 +57,19 @@ const DeviceRow: React.FC<DeviceRowProps> = ({
     v => typeof v === 'string' && v.trim() && v.trim() !== 'Unknown'
   ) as string | undefined;
 
+  // Fleet-management fields, all reported by the agent itself.
+  const isVm = Boolean(device.is_vm);
+  const hypervisor = typeof device.hypervisor === 'string' ? device.hypervisor : '';
+  const agentVersion = typeof device.agent_version === 'string' ? device.agent_version : '';
+  const inventory = (device.inventory ?? null) as
+    | { sections?: Record<string, boolean>; reported?: number; total?: number }
+    | null;
+  const reportedSections = inventory?.reported ?? 0;
+  const totalSections = inventory?.total ?? 0;
+  const missingSections = Object.entries(inventory?.sections ?? {})
+    .filter(([, ok]) => !ok)
+    .map(([name]) => name);
+
   const handleClick = () => {
     if (onClick && !deleting) onClick(device.id);
   };
@@ -127,9 +140,29 @@ const DeviceRow: React.FC<DeviceRowProps> = ({
                     target
                   </span>
                 )}
+                {isVm && (
+                  <span
+                    className="text-[8px] font-bold uppercase tracking-widest text-cyan-300 bg-cyan-400/10 border border-cyan-400/20 rounded px-1 py-px flex-shrink-0"
+                    title={hypervisor ? `Virtual machine — ${hypervisor}` : 'Virtual machine'}
+                  >
+                    {hypervisor ? `VM · ${hypervisor}` : 'VM'}
+                  </span>
+                )}
               </p>
               <p className="text-xs text-slate-500 font-mono truncate" title={mac || undefined}>
                 {device.ip}
+                {totalSections > 0 && (
+                  <span
+                    className={`ml-2 ${missingSections.length ? 'text-amber-400/80' : 'text-green-400/70'}`}
+                    title={
+                      missingSections.length
+                        ? `Inventory ${reportedSections}/${totalSections} reported. Missing: ${missingSections.join(', ')}`
+                        : `Inventory complete — all ${totalSections} sections reported`
+                    }
+                  >
+                    {reportedSections}/{totalSections} inv
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -192,6 +225,11 @@ const DeviceRow: React.FC<DeviceRowProps> = ({
         {/* LAST SEEN column - hidden on small screens */}
         <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-500 font-mono hidden md:table-cell">
           {relativeTime(device.last_seen)}
+        </td>
+
+        {/* AGENT column - which build is reporting, so a stale agent is visible */}
+        <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-400 font-mono hidden xl:table-cell">
+          {agentVersion || <span className="text-slate-700 italic">not reported</span>}
         </td>
 
         {/* ACTIONS column */}

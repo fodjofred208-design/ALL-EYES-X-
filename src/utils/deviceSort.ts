@@ -8,7 +8,7 @@
  */
 
 export type DeviceSortKey =
-  | 'hostname' | 'os' | 'hardware' | 'alerts' | 'status' | 'location' | 'last_seen';
+  | 'hostname' | 'os' | 'hardware' | 'alerts' | 'status' | 'location' | 'last_seen' | 'agent';
 export type DeviceSortDir = 'asc' | 'desc';
 
 export interface SortableDevice {
@@ -21,6 +21,7 @@ export interface SortableDevice {
   city?: unknown;
   country?: unknown;
   alerts?: unknown;
+  agent_version?: unknown;
 }
 
 /** Number of alerts on a device. Anything that is not a list counts as zero. */
@@ -53,6 +54,7 @@ export const deviceSortValue = (
     case 'hardware': return `${str(d.cpu)} ${str(d.ram)}`.trim().toLowerCase();
     case 'location': return deviceLocation(d).toLowerCase();
     case 'alerts': return deviceAlertCount(d);
+    case 'agent': return str(d.agent_version).toLowerCase();
     // Online first when ascending, so 'desc' puts offline at the bottom.
     case 'status': return d.status === 'online' ? 1 : 0;
     case 'last_seen': {
@@ -79,4 +81,6 @@ export const sortDevices = <T extends SortableDevice>(
 
 /** Sensible first-click direction per column. */
 export const defaultSortDir = (key: DeviceSortKey): DeviceSortDir =>
-  key === 'hostname' || key === 'os' || key === 'location' ? 'asc' : 'desc';
+  key === 'hostname' || key === 'os' || key === 'location' || key === 'agent'
+    ? 'asc'
+    : 'desc';

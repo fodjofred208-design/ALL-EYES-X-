@@ -228,6 +228,7 @@ const Devices: React.FC = () => {
                   <Th label="Status" sort="status" />
                   <Th label="Location" sort="location" className="hidden lg:table-cell" />
                   <Th label="Last Seen" sort="last_seen" className="hidden md:table-cell" />
+                  <Th label="Agent" sort="agent" className="hidden xl:table-cell" />
                   <th className="px-4 py-3 text-right text-xs font-bold text-green-400 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>

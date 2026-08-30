@@ -171,6 +171,7 @@ const DeviceDetail: React.FC = () => {
           <Field label="Location" value={device?.city && device?.country ? `${device.city}, ${device.country}` : null} />
           <Field label="Last Seen" value={relativeTime(String(device?.last_seen || ''))} />
           <Field label="Status" value={isOnline ? 'Online' : 'Offline'} />
+          <Field label="Agent Version" value={String(device?.agent_version || '')} mono />
         </Card>
 
         {/* OS */}
@@ -181,6 +182,28 @@ const DeviceDetail: React.FC = () => {
           <Field label="Architecture" value={String(operating_system?.architecture || device?.architecture || '')} />
           <Field label="Kernel" value={String(operating_system?.kernel_version || '')} />
           <Field label="Build" value={String(operating_system?.build_number || '')} />
+          <Field label="Language" value={String(operating_system?.language || '')} />
+          <Field label="Installed" value={String(operating_system?.install_date || '')} />
+        </Card>
+
+        {/* Virtualization - the agent checks DMI, systemd-detect-virt, the CPU
+            hypervisor flag and Win32_ComputerSystem, so "Physical" here is a
+            determination, not an assumption. */}
+        <Card title="Virtualization">
+          <Field
+            label="Platform"
+            value={device?.is_vm ? 'Virtual machine' : 'Physical machine'}
+          />
+          <Field label="Hypervisor" value={device?.is_vm ? String(device?.hypervisor || '') : null} />
+          <div className="mt-3">
+            <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Detection Evidence</p>
+            <p className="text-[11px] font-mono text-slate-400 break-words">
+              {String(device?.vm_details || '') ||
+                (device?.is_vm
+                  ? 'Reported as virtual; no individual source recorded.'
+                  : 'No virtualization signature found in DMI, CPU flags, systemd-detect-virt or Win32_ComputerSystem.')}
+            </p>
+          </div>
         </Card>
 
         {/* Processor */}

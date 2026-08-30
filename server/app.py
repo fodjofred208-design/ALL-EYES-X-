@@ -577,6 +577,12 @@ def init_db():
 
     # Safe migrations for existing databases.
     ensure_column('devices', 'deleted', 'INTEGER DEFAULT 0')
+    # Fleet-management fields: virtualization identity and the agent build that
+    # reported it, so a stale agent is visible instead of silently divergent.
+    ensure_column('devices', 'is_vm', 'INTEGER DEFAULT 0')
+    ensure_column('devices', 'hypervisor', "TEXT DEFAULT ''")
+    ensure_column('devices', 'vm_details', "TEXT DEFAULT ''")
+    ensure_column('devices', 'agent_version', "TEXT DEFAULT ''")
     ensure_column('alerts', 'severity', "TEXT DEFAULT 'info'")
     ensure_column('alerts', 'title', "TEXT DEFAULT ''")
     ensure_column('alerts', 'category', "TEXT DEFAULT 'system'")
@@ -644,6 +650,105 @@ def load_devices_from_db():
         result[row['id']] = dict(row)
     return result
 
+# Hardware identifiers that should never change on a machine nobody touched.
+# A change means a component swap, a re-imaged box, or an agent reporting as a
+# device it is not - all of which an operator needs to hear about.
+DRIFT_WATCHED = (
+    ('hardware_info', 'bios_version', 'BIOS version'),
+    ('hardware_info', 'bios_vendor', 'BIOS vendor'),
+    ('hardware_info', 'serial_number', 'serial number'),
+    ('hardware_info', 'motherboard', 'motherboard'),
+    ('hardware_info', 'model', 'system model'),
+    ('memory_info', 'total_gb', 'total memory'),
+    ('memory_info', 'slots_used', 'memory slots in use'),
+    ('processor_info', 'model', 'processor model'),
+    ('processor_info', 'core_count', 'processor core count'),
+)
+
+
+def detect_hardware_drift(device_id, resolved):
+    """Compare an incoming inventory against what is stored and alert on change.
+
+    `resolved` maps "table.column" to the value the agent just reported. Only
+    fields that were previously recorded and are now different are reported - a
+    first-time value is a discovery, not a change, and an absent value is not a
+    removal.
+    """
+    conn = get_db()
+    changes = []
+    try:
+        for table, column, label in DRIFT_WATCHED:
+            key = f'{table}.{column}'
+            if key not in resolved:
+                continue
+            new_value = resolved[key]
+            if new_value in (None, '', 0, 0.0):
+                continue
+            try:
+                row = conn.execute(
+                    f"SELECT {column} AS v FROM {table} WHERE device_id=?", (device_id,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                continue
+            if row is None:
+                continue
+            old_value = row['v']
+            if old_value in (None, '', 0, 0.0):
+                continue  # never recorded before - discovery, not drift
+            if str(old_value) != str(new_value):
+                changes.append((label, str(old_value), str(new_value)))
+    finally:
+        conn.close()
+
+    if not changes:
+        return []
+
+    hostname = (connected_devices.get(device_id) or {}).get('hostname', device_id[:8])
+    detail = '; '.join(f'{label}: {old} -> {new}' for label, old, new in changes)
+    # notify=False: the notification below is written once, with the detail.
+    add_alert_to_db(
+        device_id,
+        'hardware_change',
+        f'{len(changes)} monitored hardware value(s) changed. {detail}',
+        notify=False,
+        severity='high',
+        title=f'HARDWARE CHANGE on {hostname}',
+        category='security',
+    )
+    add_notification('security', f'HARDWARE CHANGE: {hostname} - {detail}')
+    activity('HARDWARE DRIFT', device_id=device_id[:8], host=hostname, changes=len(changes))
+    print(f"[!] Hardware drift on {hostname}: {detail}")
+    return changes
+
+
+def save_device_extras(device_id, device_info):
+    """Persist the fleet-management fields added after the original schema.
+
+    Kept as a separate statement so the original INSERT/UPDATE in
+    save_device_to_db is untouched - fewer places to get wrong, and older
+    callers that do not know about these fields still work.
+    """
+    virt = device_info.get('virtualization')
+    if not isinstance(virt, dict):
+        virt = {}
+    is_vm = device_info.get('is_vm')
+    if is_vm is None:
+        is_vm = 1 if virt.get('is_vm') else 0
+    hypervisor = device_info.get('hypervisor') or virt.get('hypervisor') or ''
+    vm_details = device_info.get('vm_details') or virt.get('details') or ''
+    agent_version = device_info.get('agent_version') or ''
+
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE devices SET is_vm=?, hypervisor=?, vm_details=?, agent_version=? WHERE id=?",
+            (int(bool(is_vm)), str(hypervisor), str(vm_details), str(agent_version), device_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def save_device_to_db(device_info):
     conn = get_db()
     existing = conn.execute("SELECT id FROM devices WHERE id=?", (device_info['id'],)).fetchone()
@@ -705,11 +810,22 @@ def save_device_to_db(device_info):
     conn.commit()
     conn.close()
 
-def add_alert_to_db(device_id, alert_type, message, notify=True):
+def add_alert_to_db(device_id, alert_type, message, notify=True,
+                    severity='info', title='', category='system'):
+    """Record an alert.
+
+    severity, title and category are written explicitly. The columns existed but
+    this INSERT never populated them, so every alert raised through here landed
+    as severity 'info' with an empty title - which is why severity filtering and
+    the alert-trend severity split could never see a critical or high alert from
+    this path.
+    """
     conn = get_db()
     conn.execute(
-        "INSERT INTO alerts (device_id, type, message, timestamp) VALUES (?,?,?,?)",
-        (device_id, alert_type, message, datetime.now().isoformat())
+        "INSERT INTO alerts (device_id, type, message, timestamp, severity, title, category)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (device_id, alert_type, message, datetime.now().isoformat(),
+         severity, title, category),
     )
     conn.commit()
     conn.close()
@@ -1269,8 +1385,16 @@ def api_register():
 
         now_iso = datetime.now().isoformat()
 
+        # Virtualization identity and agent build, reported by the agent itself.
+        virt = data.get('virtualization') if isinstance(data.get('virtualization'), dict) else {}
+        agent_version = str(data.get('agent_version') or '')
+
         device_info = {
             'id': device_id,
+            'is_vm': 1 if virt.get('is_vm') else 0,
+            'hypervisor': str(virt.get('hypervisor') or ''),
+            'vm_details': str(virt.get('details') or ''),
+            'agent_version': agent_version,
             'hostname': hostname,
             'ip': ip,
             'os': os_name,
@@ -1292,6 +1416,7 @@ def api_register():
 
         is_new = device_id not in connected_devices
         save_device_to_db(device_info)
+        save_device_extras(device_id, device_info)
         
         if is_new:
             device_info['registered_at'] = now_iso
@@ -1383,9 +1508,74 @@ def get_alerts_grouped(device_ids):
     return grouped
 
 
+# Which Device Detail panels have real data behind them. A section counts as
+# reported only when a row exists AND at least one of its values is non-empty -
+# a row of blanks is not information. This is what turns a mysteriously empty
+# panel into a visible gap.
+INVENTORY_SECTIONS = (
+    ('os', 'os_info'),
+    ('processor', 'processor_info'),
+    ('memory', 'memory_info'),
+    ('graphics', 'gpu_info'),
+    ('storage', 'storage_devices'),
+    ('network', 'network_interfaces'),
+    ('hardware', 'hardware_info'),
+    ('telemetry', 'telemetry'),
+)
+
+
+def get_inventory_completeness(device_ids):
+    """Return {device_id: {'sections': {name: bool}, 'reported': n, 'total': n}}.
+
+    One query per section for the whole fleet rather than one per device per
+    section - eight queries total instead of eight per device on every poll.
+    """
+    ids = [d for d in device_ids if d]
+    sections = {d: {name: False for name, _ in INVENTORY_SECTIONS} for d in ids}
+    if not ids:
+        return {}
+
+    placeholders = ','.join('?' for _ in ids)
+    conn = get_db()
+    try:
+        for name, table in INVENTORY_SECTIONS:
+            try:
+                rows = conn.execute(
+                    f"SELECT * FROM {table} WHERE device_id IN ({placeholders})", ids
+                ).fetchall()
+            except sqlite3.OperationalError:
+                continue  # table absent on an older database; leave it unreported
+            for row in rows:
+                device_id = row['device_id']
+                if device_id not in sections:
+                    continue
+                # A row of blanks is not information.
+                has_data = any(
+                    value not in (None, '', 0, 0.0, 'Unknown', '0', '0.0')
+                    for key, value in dict(row).items()
+                    if key not in ('id', 'device_id')
+                )
+                if has_data:
+                    sections[device_id][name] = True
+    finally:
+        conn.close()
+
+    return {
+        device_id: {
+            'sections': flags,
+            'reported': sum(1 for ok in flags.values() if ok),
+            'total': len(INVENTORY_SECTIONS),
+        }
+        for device_id, flags in sections.items()
+    }
+
+
+
 def get_device_list_for_dashboard():
     devices_list = []
-    alerts_by_device = get_alerts_grouped(list(connected_devices.keys()))
+    device_ids = list(connected_devices.keys())
+    alerts_by_device = get_alerts_grouped(device_ids)
+    inventory_by_device = get_inventory_completeness(device_ids)
     for dev_id, dev in connected_devices.items():
         devices_list.append({
             'id': dev_id,
@@ -1406,7 +1596,15 @@ def get_device_list_for_dashboard():
             'architecture': dev.get('architecture', ''),
             'latitude': dev.get('latitude', 0.0),
             'longitude': dev.get('longitude', 0.0),
-            'alerts': alerts_by_device.get(dev_id, [])
+            'alerts': alerts_by_device.get(dev_id, []),
+            'is_vm': bool(dev.get('is_vm')),
+            'hypervisor': dev.get('hypervisor', ''),
+            'vm_details': dev.get('vm_details', ''),
+            'agent_version': dev.get('agent_version', ''),
+            'inventory': inventory_by_device.get(
+                dev_id,
+                {'sections': {}, 'reported': 0, 'total': len(INVENTORY_SECTIONS)},
+            ),
         })
     
     devices_list.sort(
@@ -2760,11 +2958,18 @@ def api_dashboard():
 
             'threat': {
 
+                # security_score is None until some agent reports telemetry,
+                # which is the state of every fresh install. Both expressions
+                # below used to raise TypeError on it, so a brand-new system
+                # returned HTTP 500 for the whole Command Center instead of
+                # showing an empty dashboard. Report unknown, do not invent a 0.
                 'score':
-                    100 - security_score,
+                    None if security_score is None else 100 - security_score,
 
                 'level': (
-                    'HIGH'
+                    'UNKNOWN'
+                    if security_score is None
+                    else 'HIGH'
                     if security_score < 50
                     else 'MEDIUM'
                     if security_score < 75
@@ -3648,8 +3853,16 @@ def api_device_detail_full(device_id):
         'device': {
             'id': dev.get('id'),
             'hostname': dev.get('hostname', 'Unknown'),
-            'os': dev.get('os', 'Unknown'),
+            # Devices restored from the database carry os_name, not os, so a
+            # bare dev.get('os') read 'Unknown' for every device after a server
+            # restart. Fall through both keys.
+            'os': dev.get('os') or dev.get('os_name') or 'Unknown',
+            'os_name': dev.get('os_name') or dev.get('os') or 'Unknown',
             'os_version': dev.get('os_version', ''),
+            'is_vm': bool(dev.get('is_vm')),
+            'hypervisor': dev.get('hypervisor', ''),
+            'vm_details': dev.get('vm_details', ''),
+            'agent_version': dev.get('agent_version', ''),
             'ip': dev.get('ip', '0.0.0.0'),
             'mac': dev.get('mac', '00:00:00:00:00:00'),
             'cpu': dev.get('cpu', 'Unknown'),
@@ -3839,11 +4052,29 @@ def api_device_hardware_update(device_id):
 
         os_data = data.get('os', {}) or {}
         hw_data = data.get('hardware', {}) or {}
+        cpu_data = data.get('processor', {}) or {}
+        mem_data = data.get('memory', {}) or {}
         # wmic-derived OS block the agent nests under hardware.os
         hw_os = hw_data.get('os') if isinstance(hw_data.get('os'), dict) else {}
         bios = hw_data.get('bios') if isinstance(hw_data.get('bios'), dict) else {}
         board = hw_data.get('motherboard') if isinstance(hw_data.get('motherboard'), dict) else {}
         system = hw_data.get('system') if isinstance(hw_data.get('system'), dict) else {}
+
+        # Resolve the identifiers once, up front, so drift detection compares
+        # against the values that are actually about to be written.
+        resolved = {
+            'hardware_info.manufacturer': pick(system, 'manufacturer', 'vendor') or pick(hw_data, 'manufacturer'),
+            'hardware_info.model': pick(system, 'model', 'name', 'product') or pick(hw_data, 'model'),
+            'hardware_info.motherboard': pick(board, 'product', 'name') or pick(hw_data, 'motherboard'),
+            'hardware_info.bios_version': pick(bios, 'version') or pick(hw_data, 'bios_version'),
+            'hardware_info.bios_vendor': pick(bios, 'manufacturer', 'vendor') or pick(hw_data, 'bios_vendor'),
+            'hardware_info.serial_number': pick(system, 'serial') or pick(bios, 'serial') or pick(hw_data, 'serial_number'),
+            'memory_info.total_gb': pick(mem_data, 'total_gb', default=0),
+            'memory_info.slots_used': pick(mem_data, 'slots_used', 'slots', default=0),
+            'processor_info.model': pick(cpu_data, 'model', 'name'),
+            'processor_info.core_count': pick(cpu_data, 'core_count', 'cores', default=0),
+        }
+        detect_hardware_drift(device_id, resolved)
 
         if os_data or hw_os:
             conn.execute("""
@@ -3882,7 +4113,6 @@ def api_device_hardware_update(device_id):
                     or pick(hw_data, 'serial_number'),
             ))
         
-        cpu_data = data.get('processor', {})
         if cpu_data:
             conn.execute("""
                 INSERT OR REPLACE INTO processor_info
@@ -3898,7 +4128,6 @@ def api_device_hardware_update(device_id):
                 cpu_data.get('usage_percent', 0.0),
             ))
         
-        mem_data = data.get('memory', {})
         if mem_data:
             conn.execute("""
                 INSERT OR REPLACE INTO memory_info

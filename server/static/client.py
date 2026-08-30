@@ -153,6 +153,9 @@ DEVICE_ID_CACHE = os.path.join(os.path.expanduser('~'), '.alleyesx_device_id')
 # Defined at module level so the client stays importable (tests, Termux wrapper,
 # embedding). __main__ overwrites it with generate_device_id().
 DEVICE_ID = ""
+# Reported to the server on every registration so the Devices table can show
+# which agents are stale. Bump this whenever the agent's behaviour changes.
+AGENT_VERSION = os.environ.get('ALLEYESX_AGENT_VERSION', '3.5.0')
 HEARTBEAT_INTERVAL = 5
 STREAM_PROFILE = os.environ.get('ALLEYESX_STREAM_PROFILE', 'balanced').lower()
 STREAM_TARGET_FPS = {
@@ -491,6 +494,59 @@ def detect_virtualization():
     }
 
 
+def get_os_install_date():
+    """When the OS was installed. Empty when it cannot be determined honestly."""
+    kind = platform_kind()
+    if kind == 'windows':
+        try:
+            out = subprocess.check_output(
+                'powershell -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).InstallDate"',
+                shell=True, timeout=10, stderr=subprocess.DEVNULL,
+            ).decode('utf-8', errors='ignore').strip()
+            value = out.splitlines()[-1].strip() if out else ''
+            # PowerShell renders a DateTime as "dd/MM/yyyy HH:mm:ss" or ISO.
+            return value if value and value.lower() != 'installdate' else ''
+        except Exception:
+            return ''
+    if kind == 'linux':
+        # The installer's own marker files are the most reliable signal.
+        for path in ('/var/log/installer', '/var/log/dpkg.log', '/etc/machine-id'):
+            try:
+                stamp = os.path.getmtime(path)
+                return datetime.datetime.fromtimestamp(stamp).strftime('%Y-%m-%d')
+            except Exception:
+                continue
+        return ''
+    if kind == 'macos':
+        try:
+            out = subprocess.check_output(
+                ['stat', '-f', '%SB', '-t', '%Y-%m-%d', '/var/db/.AppleSetupDone'],
+                timeout=5, stderr=subprocess.DEVNULL).decode().strip()
+            return out
+        except Exception:
+            return ''
+    return ''
+
+
+def get_os_language():
+    """The system UI locale. Empty when it cannot be read."""
+    kind = platform_kind()
+    if kind == 'windows':
+        try:
+            out = subprocess.check_output(
+                'powershell -NoProfile -Command "(Get-Culture).Name"',
+                shell=True, timeout=10, stderr=subprocess.DEVNULL,
+            ).decode('utf-8', errors='ignore').strip()
+            value = out.splitlines()[-1].strip() if out else ''
+            return value if value and value.lower() != 'name' else ''
+        except Exception:
+            return ''
+    locale_env = os.environ.get('LANG') or os.environ.get('LC_ALL') or ''
+    if locale_env:
+        return locale_env.split('.')[0]
+    return ''
+
+
 # ============================================================
 def get_system_info():
     caps = capability_profile()
@@ -503,6 +559,9 @@ def get_system_info():
         'os': get_os_name(),
         'platform': caps['platform'],
         'os_version': platform.platform(),
+        'install_date': get_os_install_date(),
+        'language': get_os_language(),
+        'agent_version': AGENT_VERSION,
         'virtualization': detect_virtualization(),
         'cpu': get_cpu_info(),
         'ram': get_ram_info(),
