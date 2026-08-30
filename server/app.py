@@ -3819,26 +3819,53 @@ def api_device_hardware_update(device_id):
         data = request.get_json(force=True)
         conn = get_db()
         
-        os_data = data.get('os', {})
-        if os_data:
+        def pick(mapping, *names, default=''):
+            """First present, non-empty value across several possible key names.
+
+            The agent nests hardware identifiers as bios/motherboard/system
+            sub-objects and names memory fields free_gb/type/slots/speed_mhz.
+            This handler used to read only the flat, differently-named keys, so
+            every one of those columns was written empty and the Device Detail
+            panels showed nothing. Accepting both shapes fixes the panels and
+            keeps older deployed agents working.
+            """
+            if not isinstance(mapping, dict):
+                return default
+            for name in names:
+                value = mapping.get(name)
+                if value not in (None, '', [], {}):
+                    return value
+            return default
+
+        os_data = data.get('os', {}) or {}
+        hw_data = data.get('hardware', {}) or {}
+        # wmic-derived OS block the agent nests under hardware.os
+        hw_os = hw_data.get('os') if isinstance(hw_data.get('os'), dict) else {}
+        bios = hw_data.get('bios') if isinstance(hw_data.get('bios'), dict) else {}
+        board = hw_data.get('motherboard') if isinstance(hw_data.get('motherboard'), dict) else {}
+        system = hw_data.get('system') if isinstance(hw_data.get('system'), dict) else {}
+
+        if os_data or hw_os:
             conn.execute("""
                 INSERT OR REPLACE INTO os_info 
                 (device_id, os_name, os_version, edition, architecture, language, install_date, boot_time, kernel_version, build_number)
                 VALUES (?,?,?,?,?,?,?,?,?,?)
             """, (
                 device_id,
-                os_data.get('name', ''),
-                os_data.get('version', ''),
-                os_data.get('edition', ''),
-                os_data.get('architecture', ''),
-                os_data.get('language', ''),
-                os_data.get('install_date', ''),
-                os_data.get('boot_time', ''),
-                os_data.get('kernel_version', ''),
-                os_data.get('build_number', ''),
+                pick(os_data, 'name', 'caption') or pick(hw_os, 'caption', 'name'),
+                pick(os_data, 'version') or pick(hw_os, 'version'),
+                # The wmic Caption ("Microsoft Windows 10 Pro") is the closest
+                # thing to an edition the agent reports.
+                pick(os_data, 'edition') or pick(hw_os, 'caption'),
+                pick(os_data, 'architecture') or pick(hw_os, 'architecture')
+                    or pick(system, 'system_type'),
+                pick(os_data, 'language'),
+                pick(os_data, 'install_date'),
+                pick(os_data, 'boot_time'),
+                pick(os_data, 'kernel_version'),
+                pick(os_data, 'build_number') or pick(hw_os, 'build'),
             ))
-        
-        hw_data = data.get('hardware', {})
+
         if hw_data:
             conn.execute("""
                 INSERT OR REPLACE INTO hardware_info
@@ -3846,12 +3873,13 @@ def api_device_hardware_update(device_id):
                 VALUES (?,?,?,?,?,?,?)
             """, (
                 device_id,
-                hw_data.get('manufacturer', ''),
-                hw_data.get('model', ''),
-                hw_data.get('motherboard', ''),
-                hw_data.get('bios_version', ''),
-                hw_data.get('bios_vendor', ''),
-                hw_data.get('serial_number', ''),
+                pick(system, 'manufacturer', 'vendor') or pick(hw_data, 'manufacturer'),
+                pick(system, 'model', 'name', 'product') or pick(hw_data, 'model'),
+                pick(board, 'product', 'name') or pick(hw_data, 'motherboard'),
+                pick(bios, 'version') or pick(hw_data, 'bios_version'),
+                pick(bios, 'manufacturer', 'vendor') or pick(hw_data, 'bios_vendor'),
+                pick(system, 'serial') or pick(bios, 'serial')
+                    or pick(hw_data, 'serial_number'),
             ))
         
         cpu_data = data.get('processor', {})
@@ -3878,12 +3906,12 @@ def api_device_hardware_update(device_id):
                 VALUES (?,?,?,?,?,?,?)
             """, (
                 device_id,
-                mem_data.get('total_gb', 0),
-                mem_data.get('available_gb', 0),
-                mem_data.get('speed', ''),
-                mem_data.get('memory_type', ''),
-                mem_data.get('usage_percent', 0.0),
-                mem_data.get('slots_used', 0),
+                pick(mem_data, 'total_gb', default=0),
+                pick(mem_data, 'available_gb', 'free_gb', default=0),
+                pick(mem_data, 'speed', 'speed_mhz'),
+                pick(mem_data, 'memory_type', 'type'),
+                pick(mem_data, 'usage_percent', default=0.0),
+                pick(mem_data, 'slots_used', 'slots', default=0),
             ))
         
         gpu_list = data.get('graphics', [])
