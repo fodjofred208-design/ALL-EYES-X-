@@ -830,12 +830,18 @@ Raw shell commands    off — set ALLEYESX_ALLOW_RAW_COMMANDS=1, then use "shell
 Public-range scanning blocked — allow specific ranges via AEX_AUTHORIZED_PUBLIC_SCAN_TARGETS
 ```
 
-### Known limitation
+### Removed dead code
 
-`server/dashboard_engine.py` (891 lines) is **dead code** — it is not imported
-anywhere and `app.py` has its own inline implementations of the same logic. It is
-left in place rather than deleted. Either delete it or wire it in and remove the
-inline duplicates; it should not be edited as though it were live.
+Two files were deleted after proving they were referenced nowhere in the codebase
+(checked against all `.py`, `.ts`, `.tsx`, `.json`, `.md`, `.ps1` and `.txt`
+files, including dynamic imports):
+
+```text
+server/dashboard_engine.py   891 lines   app.py has its own inline implementations
+client/client_termux.py      149 lines   superseded by client/client.py
+```
+
+`app.py` remains the single source of truth for dashboard logic.
 
 ---
 
