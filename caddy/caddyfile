@@ -2,6 +2,13 @@
 
     encode gzip
 
+    # Agent download must reach Flask. Without these the catch-all below sent
+    # /static/client.py to Vite, which has no such file, so the only working
+    # URL was Flask's own port 5000 - which the firewall usually blocks.
+    reverse_proxy /static/* localhost:5000
+
+    reverse_proxy /client.py localhost:5000
+
     reverse_proxy /api/* localhost:5000
 
     reverse_proxy /socket.io/* localhost:5000

@@ -5030,6 +5030,19 @@ def serve_static(filename):
     return send_from_directory('static', filename)
 
 
+@app.route('/client.py')
+def serve_client_agent():
+    """Short download URL for deploying the agent.
+
+    /static/client.py works too, but this is easier to type on a target machine
+    and as_attachment makes both curl and a browser save the file rather than
+    display 129 KB of Python.
+    """
+    return send_from_directory(
+        'static', 'client.py', as_attachment=True, download_name='client.py'
+    )
+
+
 @app.route('/manifest.json')
 def serve_manifest():
     # There is no manifest.json in this project; send_from_directory raised

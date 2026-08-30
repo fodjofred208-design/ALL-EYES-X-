@@ -223,6 +223,57 @@ python client\client.py http://100.104.145.118:5000
 
 The device should appear in the dashboard under Devices and Command Center.
 
+### Downloading the agent onto a target machine
+
+The server serves its own copy of the agent, so a target machine needs nothing
+but Python and curl:
+
+```bash
+# through Caddy, the same port as the dashboard (preferred)
+curl -o client.py http://YOUR_SERVER_IP:8080/client.py
+
+# or straight from Flask
+curl -o client.py http://YOUR_SERVER_IP:5000/client.py
+```
+
+`/static/client.py` also works. All three serve the identical file; the
+`/client.py` form sends `Content-Disposition: attachment` so a browser saves it
+instead of displaying it.
+
+### If the download fails to connect
+
+`curl: (7) Failed to connect ... after 0 ms` is a TCP failure - the request never
+reached Flask, so it is not an application error. Work through these in order:
+
+```bash
+# 1. Is Tailscale up on BOTH machines? (100.64.0.0/10 needs it)
+tailscale status
+
+# 2. Is the server's Tailscale IP still the one you are dialling?
+tailscale ip -4          # run this ON the server
+
+# 3. Is Flask actually listening, and on all interfaces?
+#    Windows:
+netstat -ano | findstr :5000
+#    Linux:
+ss -tlnp | grep 5000
+#    You want 0.0.0.0:5000. 127.0.0.1:5000 means only the server itself can connect.
+
+# 4. Does it answer locally on the server itself?
+curl -I http://127.0.0.1:5000/client.py
+```
+
+If step 4 works and the remote machine still cannot connect, Windows Firewall is
+the usual cause:
+
+```powershell
+New-NetFirewallRule -DisplayName "ALL EYES X Flask" -Direction Inbound `
+  -LocalPort 5000 -Protocol TCP -Action Allow -RemoteAddress 100.64.0.0/10
+```
+
+Prefer port 8080 through Caddy if the dashboard already opens from that machine -
+it means the path is proven and only the agent route was missing.
+
 ---
 
 ## 8. Client.py platform support
