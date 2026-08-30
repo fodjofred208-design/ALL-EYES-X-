@@ -2,13 +2,31 @@ import { useDevices } from '../context/DeviceContext';
 import { Monitor, ChevronDown, Globe, Wifi } from 'lucide-react';
 import DeviceIcon from './DeviceIcon';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 const ALL_EYES = 'ALL EYES STAT';
 
 const DeviceSelector = () => {
   const { devices, selectedDevice, setSelectedDeviceId } = useDevices();
   const [isOpen, setIsOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Click anywhere outside the dropdown to dismiss it.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsOpen(false); };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [isOpen]);
 
   const onlineCount = devices.filter(d => d.status === 'online').length;
 
@@ -18,7 +36,7 @@ const DeviceSelector = () => {
   };
 
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-3 px-4 py-2 bg-black/40 border border-green-500/20 rounded-xl hover:border-green-500/50 transition-all group"
