@@ -1,10 +1,14 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { MoreVertical, Terminal as TerminalIcon, Send, MessageSquare, X } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { MoreVertical, Terminal as TerminalIcon, Send, MessageSquare, X, RotateCcw } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
+import ResizableBox, { loadBoxSize, clearAllBoxSizes, type BoxSize } from '../components/ResizableBox';
 import { useDevices } from '../context/DeviceContext';
 import { API_BASE } from '../utils/api';
 
 type Mode = 'main' | 'solo';
+
+const PANE_MIN: BoxSize = { w: 260, h: 150 };
+const PANE_MAX: BoxSize = { w: 2400, h: 1600 };
 
 interface PaneResult {
   device_id: string;
@@ -33,8 +37,49 @@ const MultiShell: React.FC = () => {
   const [sending, setSending] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const mainEndRef = useRef<HTMLDivElement>(null);
+  const panesRef = useRef<HTMLDivElement>(null);
+  const [sizes, setSizes] = useState<Record<string, BoxSize>>({});
+  const [containerWidth, setContainerWidth] = useState(0);
 
   const onlineDevices = devices.filter(d => d.status === 'online');
+
+  /** Sizes are stored per mode: a Main layout and a Solo layout stay independent. */
+  const sizeKey = useCallback((id: string) => `shell.${mode}.${id}`, [mode]);
+
+  /**
+   * Default pane size, derived from the real width of the pane row so an
+   * unresized shell still reads as two-up in Main and one-up in Solo.
+   */
+  const defaultPaneSize = useMemo<BoxSize>(() => {
+    const usable = containerWidth > 0 ? containerWidth : 1100;
+    const w = mode === 'solo' ? usable : Math.round((usable - 16) / 2);
+    const clamped = Math.min(PANE_MAX.w, Math.max(PANE_MIN.w, w));
+    const h = mode === 'solo' ? 360 : 220;
+    return { w: clamped, h: Math.min(PANE_MAX.h, h) };
+  }, [containerWidth, mode]);
+
+  // Measure the pane row so the defaults track the real available width.
+  useEffect(() => {
+    const el = panesRef.current;
+    if (!el) return;
+    setContainerWidth(el.clientWidth);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) setContainerWidth(Math.round(entry.contentRect.width));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [mode, selected.length, onlineDevices.length]);
+
+  /** A pane's size: what the operator dragged it to, else what was saved, else default. */
+  const sizeFor = useCallback((id: string): BoxSize => {
+    return sizes[id] ?? loadBoxSize(sizeKey(id)) ?? defaultPaneSize;
+  }, [sizes, sizeKey, defaultPaneSize]);
+
+  const resetLayout = () => {
+    clearAllBoxSizes(`shell.${mode}.`);
+    setSizes({});
+  };
 
   // Close the ⋮ menu on outside click.
   useEffect(() => {
@@ -183,36 +228,45 @@ const MultiShell: React.FC = () => {
         highlight="SHELL"
         subtitle={mode === 'main' ? 'Main Command · one command, many devices' : 'Solo Command · one command per device'}
         right={
-          <div className="relative" ref={menuRef}>
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => setMenuOpen(v => !v)}
-              aria-label="Shell mode"
-              className="p-2.5 rounded-lg border border-green-500/20 bg-green-500/5 text-green-400 hover:bg-green-600 hover:text-white transition-all"
+              onClick={resetLayout}
+              title="Put every pane back to its default size"
+              className="px-3 py-2.5 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-green-300 hover:border-green-500/40 transition-all flex items-center gap-1.5 text-[9px] font-orbitron uppercase"
             >
-              <MoreVertical size={18} />
+              <RotateCcw size={13} /> Reset
             </button>
-            {menuOpen && (
-              <div className="absolute right-0 mt-2 w-52 glass-card border-green-500/20 z-50 overflow-hidden">
-                <p className="px-3 py-2 text-[8px] font-orbitron uppercase tracking-widest text-slate-500 border-b border-white/5">
-                  Shell mode
-                </p>
-                {([
-                  { id: 'main', label: 'Main Command', desc: 'one command → all devices' },
-                  { id: 'solo', label: 'Solo Command', desc: 'a command per device' },
-                ] as const).map(opt => (
-                  <button
-                    key={opt.id}
-                    onClick={() => { setMode(opt.id); setMenuOpen(false); }}
-                    className={`w-full text-left px-3 py-2.5 hover:bg-green-500/10 transition-colors border-b border-white/5 last:border-0 ${
-                      mode === opt.id ? 'bg-green-500/10' : ''
-                    }`}
-                  >
-                    <p className="text-[11px] font-orbitron text-slate-200">{opt.label}</p>
-                    <p className="text-[9px] font-mono-data text-slate-500">{opt.desc}</p>
-                  </button>
-                ))}
-              </div>
-            )}
+            <div className="relative" ref={menuRef}>
+              <button
+                onClick={() => setMenuOpen(v => !v)}
+                aria-label="Shell mode"
+                className="p-2.5 rounded-lg border border-green-500/20 bg-green-500/5 text-green-400 hover:bg-green-600 hover:text-white transition-all"
+              >
+                <MoreVertical size={18} />
+              </button>
+              {menuOpen && (
+                <div className="absolute right-0 mt-2 w-52 glass-card border-green-500/20 z-50 overflow-hidden">
+                  <p className="px-3 py-2 text-[8px] font-orbitron uppercase tracking-widest text-slate-500 border-b border-white/5">
+                    Shell mode
+                  </p>
+                  {([
+                    { id: 'main', label: 'Main Command', desc: 'one command → all devices' },
+                    { id: 'solo', label: 'Solo Command', desc: 'a command per device' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.id}
+                      onClick={() => { setMode(opt.id); setMenuOpen(false); }}
+                      className={`w-full text-left px-3 py-2.5 hover:bg-green-500/10 transition-colors border-b border-white/5 last:border-0 ${
+                        mode === opt.id ? 'bg-green-500/10' : ''
+                      }`}
+                    >
+                      <p className="text-[11px] font-orbitron text-slate-200">{opt.label}</p>
+                      <p className="text-[9px] font-mono-data text-slate-500">{opt.desc}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         }
       />
@@ -304,57 +358,74 @@ const MultiShell: React.FC = () => {
 
       {/* Per-device terminals.
           MAIN: two-up compact read-only panes (the shared bar drives them).
-          SOLO: one-up full-height terminals, each with its own command input. */}
-      <div className={mode === 'solo'
-        ? "grid grid-cols-1 gap-4"
-        : "grid grid-cols-1 lg:grid-cols-2 gap-4"}>
+          SOLO: one-up full-height terminals, each with its own command input.
+          Flex wrap rather than a CSS grid so each pane keeps the exact size the
+          operator dragged it to instead of being stretched to fill its row. */}
+      {activeDevices.length > 0 && (
+        <p className="text-[9px] font-mono-data text-slate-600">
+          drag a pane&apos;s corner or edge to resize it · double-click a handle to reset · sizes are kept per device
+        </p>
+      )}
+      <div ref={panesRef} className="flex flex-wrap gap-4 items-start">
         {activeDevices.map(d => {
           const pane = panes[d.id];
           return (
-            <div key={d.id} className="glass-card border-green-500/10 overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-2.5 border-b border-green-500/10 bg-black/30">
-                <p className="text-[10px] font-orbitron uppercase tracking-widest text-green-400 truncate">
-                  {d.hostname}
-                </p>
-                <span className="text-[8px] font-mono-data text-slate-600">{d.ip}</span>
-              </div>
-
-              <div className={`${mode === 'solo' ? 'h-72' : 'h-44'} overflow-y-auto aeyes-scroll p-3 bg-black/40 font-mono-data text-[11px] text-green-400/80`}>
-                {(!pane || pane.lines.length === 0) && (
-                  <p className="text-slate-600">Waiting for output…</p>
-                )}
-                {pane?.lines.map((l, i) => (
-                  <div key={i} className={
-                    l.startsWith('>') ? 'text-green-300 font-bold' :
-                    l.startsWith('[error]') || l.startsWith('[failed]') ? 'text-red-400' :
-                    l.startsWith('[success]') ? 'text-green-500' :
-                    l.startsWith('[timeout]') ? 'text-amber-400' : ''
-                  }>{l || '\u00A0'}</div>
-                ))}
-                {pane?.busy && <span className="text-amber-400 animate-pulse">▌</span>}
-              </div>
-
-              {mode === 'solo' && (
-                <div className="flex items-center gap-2 px-3 py-2 border-t border-white/5">
-                  <span className="text-[10px] font-mono-data text-green-600">$</span>
-                  <input
-                    value={soloCommands[d.id] || ''}
-                    onChange={e => setSoloCommands(prev => ({ ...prev, [d.id]: e.target.value }))}
-                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); runSolo(d.id); } }}
-                    placeholder="command for this device only…"
-                    className="flex-1 bg-transparent text-[11px] font-mono-data text-green-300 placeholder-slate-600 focus:outline-none"
-                  />
-                  <button onClick={() => runSolo(d.id)}
-                    className="p-1.5 rounded text-green-400 hover:bg-green-500/10">
-                    <Send size={13} />
-                  </button>
+            <ResizableBox
+              key={d.id}
+              storageKey={sizeKey(d.id)}
+              size={sizeFor(d.id)}
+              defaultSize={defaultPaneSize}
+              min={PANE_MIN}
+              max={PANE_MAX}
+              label={d.hostname}
+              onResize={next => setSizes(prev => ({ ...prev, [d.id]: next }))}
+              className="glass-card border-green-500/10"
+            >
+              <div className="absolute inset-0 overflow-hidden rounded-2xl flex flex-col">
+                <div className="flex items-center justify-between px-4 py-2.5 border-b border-green-500/10 bg-black/30 shrink-0">
+                  <p className="text-[10px] font-orbitron uppercase tracking-widest text-green-400 truncate">
+                    {d.hostname}
+                  </p>
+                  <span className="text-[8px] font-mono-data text-slate-600">{d.ip}</span>
                 </div>
-              )}
-            </div>
+
+                <div className="flex-1 min-h-0 overflow-y-auto aeyes-scroll p-3 bg-black/40 font-mono-data text-[11px] text-green-400/80">
+                  {(!pane || pane.lines.length === 0) && (
+                    <p className="text-slate-600">Waiting for output…</p>
+                  )}
+                  {pane?.lines.map((l, i) => (
+                    <div key={i} className={
+                      l.startsWith('>') ? 'text-green-300 font-bold' :
+                      l.startsWith('[error]') || l.startsWith('[failed]') ? 'text-red-400' :
+                      l.startsWith('[success]') ? 'text-green-500' :
+                      l.startsWith('[timeout]') ? 'text-amber-400' : ''
+                    }>{l || '\u00A0'}</div>
+                  ))}
+                  {pane?.busy && <span className="text-amber-400 animate-pulse">▌</span>}
+                </div>
+
+                {mode === 'solo' && (
+                  <div className="flex items-center gap-2 px-3 py-2 border-t border-white/5 shrink-0">
+                    <span className="text-[10px] font-mono-data text-green-600">$</span>
+                    <input
+                      value={soloCommands[d.id] || ''}
+                      onChange={e => setSoloCommands(prev => ({ ...prev, [d.id]: e.target.value }))}
+                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); runSolo(d.id); } }}
+                      placeholder="command for this device only…"
+                      className="flex-1 bg-transparent text-[11px] font-mono-data text-green-300 placeholder-slate-600 focus:outline-none"
+                    />
+                    <button onClick={() => runSolo(d.id)}
+                      className="p-1.5 rounded text-green-400 hover:bg-green-500/10">
+                      <Send size={13} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </ResizableBox>
           );
         })}
         {activeDevices.length === 0 && (
-          <div className="glass-card p-8 text-center col-span-full">
+          <div className="glass-card p-8 text-center w-full">
             <p className="text-[10px] font-orbitron uppercase tracking-widest text-slate-500">
               No target devices — select devices above or bring an agent online.
             </p>
