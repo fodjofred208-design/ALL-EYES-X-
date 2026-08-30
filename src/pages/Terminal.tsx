@@ -286,13 +286,22 @@ const Terminal = () => {
              <option value="">SELECT TARGET</option>
              {devices.map(d => <option key={d.id} value={d.id}>{d.hostname}</option>)}
            </select>
+           {/* Square tile — Multi-Shell is a first-class feature, not a link. */}
            <button
              onClick={() => navigate('/multi-shell')}
-             className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 border border-green-500/40 rounded text-green-300 hover:bg-green-600 hover:text-white transition-all text-[10px] font-orbitron uppercase"
-             title="Open the Multi-Shell page (Main Command / Solo Command)"
+             title="Multi-Shell — Main Command and Solo Command"
+             className="w-40 h-40 rounded-2xl border border-green-500/25 bg-green-500/[0.06] hover:bg-green-600/15 hover:border-green-500/60 transition-all flex flex-col items-center justify-center gap-3 group shrink-0"
            >
-             <Layers size={12} />
-             Multi-Shell
+             <Layers size={30} className="text-green-400 group-hover:text-green-300" />
+             <span className="text-[11px] font-orbitron uppercase tracking-[0.2em] text-green-400 group-hover:text-green-300">
+               Multi-Shell
+             </span>
+             <span className="text-[8px] font-mono-data text-slate-500 px-3 text-center leading-relaxed">
+               Main Command or Solo Command across devices
+             </span>
+             <span className="text-[8px] font-orbitron uppercase tracking-widest text-green-500/70 group-hover:text-green-300">
+               open →
+             </span>
            </button>
            <div className="flex items-center gap-2 px-3 py-1 bg-amber-500/10 border border-amber-500/30 rounded text-amber-400 text-[10px] font-orbitron uppercase">
              <ShieldAlert size={12} />
