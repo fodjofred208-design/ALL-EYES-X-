@@ -6,9 +6,11 @@ Components remain runnable individually.
 param(
   [switch]$NoCaddy,
   [switch]$NoClient,
+  [switch]$Serve,
   [string]$Python = "python",
   [string]$Npm = "npm.cmd",
   [string]$Caddy = "caddy.exe",
+  [string]$Tailscale = "tailscale.exe",
   [string]$ServerUrl = "http://127.0.0.1:5000"
 )
 
@@ -57,8 +59,32 @@ if (-not $NoClient) {
   Start-AexProcess -Name "client" -FilePath $Python -Arguments "client\client.py $ServerUrl" -WorkingDirectory $Root -Port 0
 }
 
+# ---------------------------------------------------------------------------
+# Remote HTTPS access via Tailscale Serve.
+#
+# Caddy listens on :8080 over plain HTTP, so nothing answers on port 443 and
+# https://<machine>.<tailnet>.ts.net cannot reach the dashboard on its own.
+# `tailscale serve` terminates TLS for the magicDNS name and forwards to the
+# local Caddy port. Opt-in with -Serve because it changes tailnet state and
+# needs operator rights (tailscale set --operator=$env:USERNAME), and HTTPS
+# certificates must be enabled for the tailnet in the admin console.
+# ---------------------------------------------------------------------------
+if ($Serve) {
+  if (-not $NoCaddy) {
+    Write-Host "[SERVE] tailscale serve --bg --https=443 http://127.0.0.1:8080" -ForegroundColor Green
+    & $Tailscale serve --bg --https=443 http://127.0.0.1:8080
+  } else {
+    Write-Host "[SERVE] skipped: -NoCaddy was given, nothing is listening on 8080" -ForegroundColor Yellow
+  }
+}
+
 Write-Host ""
-Write-Host "Open via Caddy:   http://127.0.0.1:8080" -ForegroundColor Cyan
+Write-Host "Open locally:     http://127.0.0.1:8080" -ForegroundColor Cyan
 Write-Host "Vite direct:      http://127.0.0.1:5173" -ForegroundColor Cyan
 Write-Host "Flask API:        http://127.0.0.1:5000" -ForegroundColor Cyan
+if ($Serve) {
+  Write-Host "Remote HTTPS:     https://<machine>.<tailnet>.ts.net (via tailscale serve)" -ForegroundColor Cyan
+} else {
+  Write-Host "Remote access:    re-run with -Serve to publish https://<machine>.<tailnet>.ts.net" -ForegroundColor Cyan
+}
 Write-Host "Use logs\*.log to inspect every activity printed by app.py/client.py." -ForegroundColor Cyan

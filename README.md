@@ -72,8 +72,13 @@ pip install -r requirements.txt
 Recommended Python client extras:
 
 ```powershell
-pip install requests psutil pillow mss pyautogui opencv-python pynput
+pip install requests psutil pillow mss pyautogui opencv-python pynput numpy
 ```
+
+`numpy` is required for dirty-rectangle streaming. Without it the agent still
+streams, but it silently falls back to sending every frame whole, which uses far
+more bandwidth. `opencv-python` normally pulls it in; it is listed explicitly so
+a partial install cannot quietly downgrade the stream.
 
 For Nmap scanning, install Nmap and verify:
 
@@ -901,7 +906,62 @@ https://github.com/fodjofred208-design/ALL-EYES-X-/archive/refs/heads/arena/01a0
 
 ---
 
-## 28. Deep scan — bugs found and fixed
+## 28. Remote access over Tailscale (HTTPS)
+
+The dashboard is served by Caddy on **port 8080 over plain HTTP**. Nothing in the
+system listens on port 443, so a bare `https://<machine>.<tailnet>.ts.net` URL has
+no listener to reach — that is why it did not open from another computer or phone.
+
+Fix it with Tailscale Serve, which terminates TLS for the magicDNS name and
+forwards to Caddy. On the **server** machine:
+
+```powershell
+# once: let your user control tailscale, and enable HTTPS certs for the tailnet
+tailscale set --operator=$env:USERNAME
+# (also enable "HTTPS certificates" for the tailnet in the Tailscale admin console)
+
+# publish the dashboard
+tailscale serve --bg --https=443 http://127.0.0.1:8080
+```
+
+Or let the launcher do it:
+
+```powershell
+.\start_all.ps1 -Serve
+```
+
+Then `https://<machine>.<tailnet>.ts.net` works from any device on the tailnet.
+
+To stop publishing:
+
+```powershell
+tailscale serve --https=443 off
+```
+
+### Without Tailscale Serve
+
+Use the tailnet IP over plain HTTP, and allow the port through Windows Firewall:
+
+```powershell
+tailscale ip -4
+New-NetFirewallRule -DisplayName "ALL EYES X Caddy" -Direction Inbound `
+  -LocalPort 8080 -Protocol TCP -Action Allow -RemoteAddress 100.64.0.0/10
+```
+
+Then open `http://<tailscale-ip>:8080`. Prefer Tailscale Serve: it gives you TLS
+instead of sending the login over plain HTTP.
+
+### Checking it
+
+```powershell
+tailscale status            # is the machine on the tailnet?
+tailscale serve status      # is 443 mapped to 8080?
+curl.exe -I http://127.0.0.1:8080
+```
+
+---
+
+## 29. Deep scan — bugs found and fixed
 
 Found by driving the real API end to end, not by reading the code alone.
 

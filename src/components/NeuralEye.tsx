@@ -1,6 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, useSpring, useMotionValue } from 'framer-motion';
 
+// ---------------------------------------------------------------------------
+// Animation timings, in seconds, as specified for every eye in the app.
+// The `speed` prop divides them (see `d`) so a caller such as the login
+// lockdown state can make the eye more agitated without a second component.
+// ---------------------------------------------------------------------------
+const SCAN_VALVE_SECONDS = [6, 9, 12];  // three valve rings, inner to outer
+const CROSSHAIR_SECONDS = 8;            // middle cross-hair valve
+const SCAN_SWEEP_SECONDS = 3.5;         // horizontal sweep line
+const PUPIL_BREATH_SECONDS = 2.5;       // pupil scale breathing
+const IDLE_WANDER_SECONDS = 2.5;        // pupil drift while the mouse is still
+const BLINK_SECONDS = 3;                // blink interval
+const IDLE_RESUME_SECONDS = 1.2;        // mouse must be still this long first
+
 const NeuralEye: React.FC<{ size?: number; active?: boolean; color?: string; speed?: number }> = ({ 
   size = 200, 
   active = true,
@@ -40,7 +53,7 @@ const NeuralEye: React.FC<{ size?: number; active?: boolean; color?: string; spe
       wanderTimer.current = setInterval(() => {
         mouseX.set((Math.random() - 0.5) * 16);
         mouseY.set((Math.random() - 0.5) * 16);
-      }, d(1.6));
+      }, d(IDLE_WANDER_SECONDS));
     };
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -52,7 +65,7 @@ const NeuralEye: React.FC<{ size?: number; active?: boolean; color?: string; spe
       mouseY.set((e.clientY / window.innerHeight - 0.5) * 30);
 
       // Resume idle wander only after the mouse has been still.
-      idleTimer.current = setTimeout(startWander, d(1.2));
+      idleTimer.current = setTimeout(startWander, d(IDLE_RESUME_SECONDS));
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -63,7 +76,7 @@ const NeuralEye: React.FC<{ size?: number; active?: boolean; color?: string; spe
     const blinkInterval = setInterval(() => {
       setIsBlinking(true);
       setTimeout(() => setIsBlinking(false), 120);
-    }, d(3));
+    }, d(BLINK_SECONDS));
 
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
@@ -132,7 +145,7 @@ const NeuralEye: React.FC<{ size?: number; active?: boolean; color?: string; spe
           {/* === 3 CIRCULAR SCANNING VALVES === */}
           {[0, 1, 2].map((ring) => {
             const ringSize = 25 + ring * 18;
-            const ringSpeed = d(2.4 + ring * 1.2);
+            const ringSpeed = d(SCAN_VALVE_SECONDS[ring] ?? 6);
             const direction = ring % 2 === 0 ? 'normal' : 'reverse';
             const dashSize = ring === 0 ? '30 70' : ring === 1 ? '20 80' : '40 60';
             
@@ -176,7 +189,7 @@ const NeuralEye: React.FC<{ size?: number; active?: boolean; color?: string; spe
             className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
             style={{ width: '55%', height: '55%' }}
             animate={{ rotate: 360 }}
-            transition={{ duration: d(3.2), repeat: Infinity, ease: "linear" }}
+            transition={{ duration: d(CROSSHAIR_SECONDS), repeat: Infinity, ease: "linear" }}
           >
             <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[2px] h-full opacity-20"
               style={{ background: `linear-gradient(to bottom, transparent, ${color}, transparent)` }}
@@ -195,7 +208,7 @@ const NeuralEye: React.FC<{ size?: number; active?: boolean; color?: string; spe
               boxShadow: `0 0 40px 10px rgba(0,0,0,0.9), inset 0 0 20px ${color}10`
             }}
             animate={{ scale: active ? [1, 1.05, 1] : 1 }}
-            transition={{ duration: d(1.3), repeat: Infinity }}
+            transition={{ duration: d(PUPIL_BREATH_SECONDS), repeat: Infinity }}
           >
             {/* Primary reflection */}
             <div className="absolute top-[18%] left-[18%] w-3 h-3 bg-white/40 rounded-full blur-[1px]" />
@@ -227,7 +240,7 @@ const NeuralEye: React.FC<{ size?: number; active?: boolean; color?: string; spe
           className="absolute w-full h-[1px] z-20"
           style={{ backgroundColor: color, boxShadow: `0 0 8px ${color}` }}
           animate={{ top: ['0%', '100%', '0%'] }}
-          transition={{ duration: d(1.8), repeat: Infinity, ease: "linear" }}
+          transition={{ duration: d(SCAN_SWEEP_SECONDS), repeat: Infinity, ease: "linear" }}
         />
 
         {/* Human-like Blinking Eyelids */}
