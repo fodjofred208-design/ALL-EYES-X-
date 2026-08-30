@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import BackButton from '../components/BackButton';
+import { usePolling } from '../hooks/usePolling';
 import { Smartphone, Monitor, Zap, Wifi, Signal, RefreshCw, MousePointer2, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
@@ -18,10 +19,8 @@ const TouchMonitor = () => {
   const [remoteScreen, setRemoteScreen] = useState<string | null>(null);
   const [cursorPos, setCursorPos] = useState({ x: 0, y: 0 });
   const canvasRef = useRef<HTMLDivElement>(null);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const inFlightRef = useRef(false);
   const [zoom, setZoom] = useState(1);
-  const [showMoreFeature, setShowMoreFeature] = useState(false);
-  const [watched, setWatched] = useState<string[]>([]);
   const [controlSession, setControlSession] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
 
@@ -47,24 +46,25 @@ const TouchMonitor = () => {
   // Polling for remote screen
   const pollScreen = useCallback(async () => {
     if (!selectedDevice || !isMirroring) return;
+    if (inFlightRef.current) return;   // never stack overlapping requests
+    inFlightRef.current = true;
     try {
       const res = await fetch(`${API_BASE}/api/screenshot/${selectedDevice.id}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         if (data.image) setRemoteScreen(`data:image/jpeg;base64,${data.image}`);
       }
-    } catch {}
+    } catch {
+      // Silent
+    } finally {
+      inFlightRef.current = false;
+    }
   }, [selectedDevice, isMirroring]);
 
-  // Start/stop polling — fallback only, never on top of the socket push.
-  useEffect(() => {
-    if (!isMirroring || !selectedDevice || isConnected) return;
-    pollScreen();
-    pollingRef.current = setInterval(pollScreen, 100);
-    return () => {
-      if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
-    };
-  }, [isMirroring, selectedDevice, pollScreen, isConnected]);
+  // Fallback only, never on top of the socket push. usePolling also pauses while
+  // the tab is hidden, so a backgrounded mirror stops pulling a full screenshot
+  // ten times a second from a machine nobody is looking at.
+  usePolling(pollScreen, 100, isMirroring && !!selectedDevice && !isConnected);
 
   // Get canvas-relative coordinates scaled to the remote screen
   const getScaledCoords = useCallback((clientX: number, clientY: number) => {
@@ -107,6 +107,7 @@ const TouchMonitor = () => {
     } else {
       fetch(`${API_BASE}/api/touch`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       }).catch(() => {});
@@ -156,9 +157,6 @@ const TouchMonitor = () => {
 
   // Socket is the primary transport; polling only when the socket is down.
   // Polling on top of the socket doubles the load and caps the frame rate.
-  const toggleWatched = (id: string) =>
-    setWatched(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-
   /** Announce and take control. The remote user is notified, not asked. */
   const takeControl = async () => {
     if (!selectedDevice) return;
@@ -489,49 +487,7 @@ const TouchMonitor = () => {
           </span>
         </button>
 
-        {showMoreFeature && (
-          <div className="mt-4 space-y-3">
-            <div className="flex flex-wrap gap-2">
-              {onlineDevices.map(d => (
-                <button key={d.id} onClick={() => toggleWatched(d.id)}
-                  className={`px-3 py-1.5 rounded-lg border text-[9px] font-orbitron uppercase transition-all ${
-                    watched.includes(d.id)
-                      ? 'border-green-500/50 bg-green-500/10 text-green-300'
-                      : 'border-white/10 bg-white/5 text-slate-500 hover:text-slate-300'
-                  }`}>
-                  {watched.includes(d.id) ? '− ' : '+ '}{d.hostname}
-                </button>
-              ))}
-              {onlineDevices.length === 0 && (
-                <p className="text-[10px] font-mono-data text-slate-600">No online devices to add.</p>
-              )}
-            </div>
-
-            {watched.length === 0 ? (
-              <p className="text-[10px] font-mono-data text-slate-600 py-4 text-center">
-                Add devices above to build the control wall.
-              </p>
-            ) : (
-              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-                {watched.map(id => {
-                  const d = devices.find(x => x.id === id);
-                  return (
-                    <div key={id} className="rounded-xl border border-white/5 bg-black/40 overflow-hidden">
-                      <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
-                        <span className="text-[10px] font-orbitron text-slate-300 truncate">{d?.hostname ?? id.slice(0, 8)}</span>
-                        <button onClick={() => setSelectedDeviceId(id)}
-                          className="text-[8px] font-orbitron text-green-400 hover:text-green-300 uppercase">Focus</button>
-                      </div>
-                      <img src={`${API_BASE}/api/screenshot/${id}/latest`} alt={`${d?.hostname ?? id} preview`}
-                        className="w-full h-28 object-contain bg-black"
-                        onError={(e) => { (e.currentTarget as HTMLImageElement).style.opacity = '0.15'; }} />
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
+        
       </div>
     </div>
   );

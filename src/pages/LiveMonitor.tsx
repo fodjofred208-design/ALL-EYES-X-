@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import BackButton from '../components/BackButton';
+import { usePolling } from '../hooks/usePolling';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Settings, MousePointer2, Keyboard, RefreshCw,
@@ -32,8 +33,6 @@ const LiveMonitor = () => {
   const [connectionQuality, setConnectionQuality] = useState<'excellent' | 'good' | 'average' | 'poor'>('excellent');
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [showMoreFeature, setShowMoreFeature] = useState(false);
-  const [watched, setWatched] = useState<string[]>([]);
   const [showDataCheck, setShowDataCheck] = useState(false);
   const [serverStats, setServerStats] = useState<any>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -42,7 +41,6 @@ const LiveMonitor = () => {
   const frameCountRef = useRef(0);
   const lastFpsTimeRef = useRef(Date.now());
   const lastFrameTimeRef = useRef(Date.now());
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const offscreenCtxRef = useRef<CanvasRenderingContext2D | null>(null);
 
@@ -223,26 +221,16 @@ const LiveMonitor = () => {
     }
   }, [selectedDevice, isLive, renderFrame]);
 
-  useEffect(() => {
-    // Socket connected: frames arrive by push, no polling needed.
-    if (!isLive || !selectedDevice || isConnected) return;
-
-    pollFrame();
-    const adaptiveMs = {
-      excellent: 33,  // ~30 FPS ceiling for HTTP polling
-      good: 40,
-      average: 50,
-      poor: 66,
-    }[connectionQuality];
-    pollingRef.current = setInterval(pollFrame, adaptiveMs);
-
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    };
-  }, [isLive, selectedDevice, pollFrame, connectionQuality, isConnected]);
+  // Socket connected: frames arrive by push, so no polling at all. Otherwise
+  // poll at a rate set by the measured connection quality, and pause while the
+  // tab is hidden rather than pulling 30 screenshots a second for nobody.
+  const adaptiveMs = {
+    excellent: 33,  // ~30 FPS ceiling for HTTP polling
+    good: 40,
+    average: 50,
+    poor: 66,
+  }[connectionQuality];
+  usePolling(pollFrame, adaptiveMs, isLive && !!selectedDevice && !isConnected);
 
   // Real server-measured stream statistics for the Data Check panel.
   useEffect(() => {
@@ -275,9 +263,6 @@ const LiveMonitor = () => {
       /* canvas may be tainted if the frame came from another origin */
     }
   };
-
-  const toggleWatched = (id: string) =>
-    setWatched(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
   const toggleLive = () => {
     if (!selectedDevice) return;
@@ -683,59 +668,7 @@ const LiveMonitor = () => {
               </span>
             </button>
 
-            {showMoreFeature && (
-              <div className="mt-4 space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  {onlineDevices.map(d => (
-                    <button
-                      key={d.id}
-                      onClick={() => toggleWatched(d.id)}
-                      className={`px-3 py-1.5 rounded-lg border text-[9px] font-orbitron uppercase transition-all ${
-                        watched.includes(d.id)
-                          ? 'border-green-500/50 bg-green-500/10 text-green-300'
-                          : 'border-white/10 bg-white/5 text-slate-500 hover:text-slate-300'
-                      }`}
-                    >
-                      {watched.includes(d.id) ? '− ' : '+ '}{d.hostname}
-                    </button>
-                  ))}
-                  {onlineDevices.length === 0 && (
-                    <p className="text-[10px] font-mono-data text-slate-600">No online devices to add.</p>
-                  )}
-                </div>
-
-                {watched.length === 0 ? (
-                  <p className="text-[10px] font-mono-data text-slate-600 py-4 text-center">
-                    Add devices above to build the monitoring wall.
-                  </p>
-                ) : (
-                  <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-                    {watched.map(id => {
-                      const d = devices.find(x => x.id === id);
-                      return (
-                        <div key={id} className="rounded-xl border border-white/5 bg-black/40 overflow-hidden">
-                          <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
-                            <span className="text-[10px] font-orbitron text-slate-300 truncate">{d?.hostname ?? id.slice(0, 8)}</span>
-                            <button
-                              onClick={() => { setSelectedDeviceId(id); }}
-                              className="text-[8px] font-orbitron text-green-400 hover:text-green-300 uppercase"
-                            >
-                              Focus
-                            </button>
-                          </div>
-                          <img
-                            src={`${API_BASE}/api/screenshot/${id}/latest`}
-                            alt={`${d?.hostname ?? id} preview`}
-                            className="w-full h-28 object-contain bg-black"
-                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.opacity = '0.15'; }}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
+            
           </div>
 
           {/* ---------- DATA CHECK ---------- */}

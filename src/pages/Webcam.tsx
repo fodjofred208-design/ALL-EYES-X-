@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import BackButton from '../components/BackButton';
+import { usePolling } from '../hooks/usePolling';
 import { Camera, CameraOff, Video, RefreshCw, Download, Settings, Shield, Sun } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
@@ -20,12 +21,9 @@ const Webcam = () => {
   const [recordedChunks, setRecordedChunks] = useState<Blob[]>([]);
   const [streamQuality, setStreamQuality] = useState<'smooth' | 'balanced' | 'quality'>('balanced');
   const [canvasSize, setCanvasSize] = useState({ w: 640, h: 480 });
-  const [showMoreFeature, setShowMoreFeature] = useState(false);
-  const [watched, setWatched] = useState<string[]>([]);
 
   const frameCountRef = useRef(0);
   const lastFpsTimeRef = useRef(Date.now());
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const pendingFrameRef = useRef<string | null>(null);
@@ -88,24 +86,14 @@ const Webcam = () => {
   }, [selectedDevice, isActive]);
 
   // Polling interval - skipped entirely while the socket is delivering frames.
-  useEffect(() => {
-    if (!canStream || isConnected) {
-      if (pollingRef.current) clearInterval(pollingRef.current);
-      pollingRef.current = null;
-      return;
-    }
-    const intervals = {
-      smooth: 33,   // ~30 FPS ceiling for HTTP polling
-      balanced: 40,
-      quality: 50,
-    };
-    const ms = intervals[streamQuality];
-    pollFrame();
-    pollingRef.current = setInterval(pollFrame, ms);
-    return () => {
-      if (pollingRef.current) clearInterval(pollingRef.current);
-    };
-  }, [canStream, pollFrame, streamQuality, isConnected]);
+  // Skipped entirely while the socket is delivering frames, and paused while the
+  // tab is hidden.
+  const frameMs = {
+    smooth: 33,   // ~30 FPS ceiling for HTTP polling
+    balanced: 40,
+    quality: 50,
+  }[streamQuality];
+  usePolling(pollFrame, frameMs, canStream && !isConnected);
 
   const handleToggle = () => {
     if (!selectedDevice) {
@@ -121,6 +109,7 @@ const Webcam = () => {
       setCurrentFrame(null);
       fetch(`${API_BASE}/api/webcam/${selectedDevice.id}/start`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           camera: isFrontCamera ? 'front' : 'back',
@@ -129,7 +118,7 @@ const Webcam = () => {
       }).catch(() => {});
       notifySystem('connection', `Webcam started: ${selectedDevice.hostname}`);
     } else {
-      fetch(`${API_BASE}/api/webcam/${selectedDevice.id}/stop`, { method: 'POST' }).catch(() => {});
+      fetch(`${API_BASE}/api/webcam/${selectedDevice.id}/stop`, { method: 'POST', credentials: 'include' }).catch(() => {});
       setCurrentFrame(null);
       setFps(0);
       notifySystem('security', 'Stream terminated');
@@ -196,6 +185,7 @@ const Webcam = () => {
     if (selectedDevice && isActive) {
       fetch(`${API_BASE}/api/webcam/${selectedDevice.id}/switch`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ camera: !isFrontCamera ? 'front' : 'back' }),
       }).catch(() => {});
@@ -422,59 +412,7 @@ const Webcam = () => {
               </span>
             </button>
 
-            {showMoreFeature && (
-              <div className="mt-4 space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  {onlineDevices.map(d => (
-                    <button
-                      key={d.id}
-                      onClick={() => setWatched(prev => prev.includes(d.id) ? prev.filter(x => x !== d.id) : [...prev, d.id])}
-                      className={`px-3 py-1.5 rounded-lg border text-[9px] font-orbitron uppercase transition-all ${
-                        watched.includes(d.id)
-                          ? 'border-green-500/50 bg-green-500/10 text-green-300'
-                          : 'border-white/10 bg-white/5 text-slate-500 hover:text-slate-300'
-                      }`}
-                    >
-                      {watched.includes(d.id) ? '− ' : '+ '}{d.hostname}
-                    </button>
-                  ))}
-                  {onlineDevices.length === 0 && (
-                    <p className="text-[10px] font-mono-data text-slate-600">No online devices to add.</p>
-                  )}
-                </div>
-
-                {watched.length === 0 ? (
-                  <p className="text-[10px] font-mono-data text-slate-600 py-4 text-center">
-                    Add devices above to build the camera wall.
-                  </p>
-                ) : (
-                  <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-                    {watched.map(id => {
-                      const d = devices.find(x => x.id === id);
-                      return (
-                        <div key={id} className="rounded-xl border border-white/5 bg-black/40 overflow-hidden">
-                          <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
-                            <span className="text-[10px] font-orbitron text-slate-300 truncate">{d?.hostname ?? id.slice(0, 8)}</span>
-                            <button
-                              onClick={() => setSelectedDeviceId(id)}
-                              className="text-[8px] font-orbitron text-green-400 hover:text-green-300 uppercase"
-                            >
-                              Focus
-                            </button>
-                          </div>
-                          <img
-                            src={`${API_BASE}/api/webcam/${id}/latest`}
-                            alt={`${d?.hostname ?? id} camera`}
-                            className="w-full h-28 object-contain bg-black"
-                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.opacity = '0.15'; }}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
+            
           </div>
 
           <div className="glass-card p-6 border-green-500/10">

@@ -1866,16 +1866,25 @@ def api_dashboard():
             if column not in allowed_columns:
                 return []
 
+            # IS NOT NULL: a day this server never observed has no value. It is
+            # left out of the series rather than substituted with `default`,
+            # which would draw a fabricated 0 and read as a real measurement.
+            #
+            # ORDER BY date DESC + LIMIT: take the most RECENT 30 days. Ordered
+            # ASC this returned the oldest 30, so once history passed a month the
+            # chart would keep showing the same ancient window forever.
             rows = _q(
                 f"""
                 SELECT
                     date AS t,
                     {column} AS v
                 FROM daily_stats
-                ORDER BY date ASC
+                WHERE {column} IS NOT NULL
+                ORDER BY date DESC
                 LIMIT 30
                 """
             )
+            rows.reverse()
 
             return [
                 {
@@ -2024,6 +2033,10 @@ def api_dashboard():
         # Alert trend by severity, grouped by day. Real counts only -
         # days with no alerts are simply absent from the series.
         # ------------------------------------------------------------
+        # ORDER BY d DESC + LIMIT keeps the MOST RECENT window. Ordered ASC this
+        # returned the oldest 120 rows, so once the alert history passed that
+        # window the trend chart would keep drawing the same stale days forever.
+        # alert_trend_days is sorted below, so the emitted order is unaffected.
         sev_rows = _q("""
             SELECT
                 substr(timestamp, 1, 10) AS d,
@@ -2031,7 +2044,7 @@ def api_dashboard():
                 COUNT(*) AS c
             FROM alerts
             GROUP BY d, sev
-            ORDER BY d ASC
+            ORDER BY d DESC
             LIMIT 120
         """)
 
@@ -2087,9 +2100,16 @@ def api_dashboard():
             'security': security_series,
 
             'protocols': [
+                # Key names must match ProtocolChart.tsx, which plots
+                # dataKey="name" against dataKey="percent". This used to read
+                # row['protocol'] / row['value'], neither of which protocol_rows
+                # produces, so the chart received [{name: null, value: null}]
+                # and rendered empty bars even though the data was correct.
                 {
-                    'name': row.get('protocol'),
-                    'value': row.get('value')
+                    'name': row.get('name'),
+                    'percent': row.get('percent'),
+                    'devices': row.get('devices'),
+                    'source': row.get('source'),
                 }
                 for row in protocol_rows
             ],
@@ -4741,6 +4761,138 @@ def prune_old_rows():
     return removed
 
 
+# ============================================================
+# Daily statistics snapshot
+#
+# daily_stats backs the Command Center's Threat Chart and the alert /
+# bandwidth / CPU history series. The table was created and queried but nothing
+# ever wrote a row to it, so _series() always returned [] and those charts had
+# nothing to draw - the Threat Chart could never render at all.
+#
+# Every value written here is measured; nothing is estimated or invented.
+#   * alerts and bandwidth are aggregated per day from the real event tables
+#     (alerts.timestamp, traffic_samples.ts). Those are historically accurate,
+#     so past days are backfilled exactly.
+#   * score and avg_cpu describe the fleet at a moment in time, and telemetry
+#     keeps only the latest row per device - there is no history to read back.
+#     They are therefore captured only for days this server actually observes,
+#     and left NULL otherwise. _series() skips NULLs, so a day that was never
+#     watched is absent from the chart rather than drawn as a fabricated 0.
+# ============================================================
+DAILY_COLUMNS = ('alerts', 'bandwidth', 'score', 'avg_cpu')
+
+
+def snapshot_daily_stats():
+    conn = get_db()
+    written = 0
+    try:
+        def upsert(day, **values):
+            """Write only the columns we actually measured, keeping the rest.
+
+            Unmeasured columns are inserted as explicit NULL. Leaving them out
+            would let the schema's DEFAULT 0 fill them in, and a 0 score is
+            indistinguishable from a real score of 0 - exactly the fabricated
+            reading _series() is meant to skip.
+            """
+            nonlocal written
+            measured = {k: v for k, v in values.items() if v is not None}
+            if not day or not measured:
+                return
+            cols = ['date'] + list(DAILY_COLUMNS)
+            marks = ', '.join('?' for _ in cols)
+            row_vals = [day] + [measured.get(c) for c in DAILY_COLUMNS]
+            # On a refresh, touch only what we just measured so a score captured
+            # earlier today is never wiped by a later alerts-only pass.
+            updates = ', '.join(f'{c}=excluded.{c}' for c in measured)
+            conn.execute(
+                f"INSERT INTO daily_stats ({', '.join(cols)}) VALUES ({marks}) "
+                f"ON CONFLICT(date) DO UPDATE SET {updates}",
+                row_vals,
+            )
+            written += 1
+
+        # --- alerts per day: exact, straight from the alert log -----------
+        for row in conn.execute("""
+            SELECT substr(timestamp, 1, 10) AS d, COUNT(*) AS c
+            FROM alerts
+            WHERE timestamp IS NOT NULL AND timestamp != ''
+            GROUP BY d
+        """).fetchall():
+            upsert(row['d'], alerts=int(row['c'] or 0))
+
+        # --- bandwidth per day: exact, straight from the traffic samples --
+        for row in conn.execute("""
+            SELECT date(ts, 'unixepoch') AS d,
+                   SUM(COALESCE(download, 0) + COALESCE(upload, 0)) AS b
+            FROM traffic_samples
+            WHERE ts IS NOT NULL AND ts > 0
+            GROUP BY d
+        """).fetchall():
+            upsert(row['d'], bandwidth=float(row['b'] or 0))
+
+        # --- today's live state, applying the same penalties the security
+        #     panel applies so the chart and the panel cannot disagree -----
+        tel = conn.execute(
+            "SELECT firewall, antivirus, malware_detected, cpu FROM telemetry"
+        ).fetchall()
+        if tel:
+            score = 100
+            if any(not bool(t['firewall']) for t in tel):
+                score -= 15
+            if any(not bool(t['antivirus']) for t in tel):
+                score -= 15
+            if any(bool(t['malware_detected']) for t in tel):
+                score -= 35
+
+            off = conn.execute(
+                "SELECT COUNT(*) AS c FROM devices WHERE status='offline' AND deleted=0"
+            ).fetchone()
+            offline = int(off['c'] or 0) if off else 0
+            if offline:
+                score -= min(offline * 3, 15)
+
+            sev = {
+                (r['s'] or 'low').lower(): int(r['c'] or 0)
+                for r in conn.execute("""
+                    SELECT lower(COALESCE(severity, type, 'low')) AS s, COUNT(*) AS c
+                    FROM alerts GROUP BY s
+                """).fetchall()
+            }
+            alert_penalty = min((sev.get('critical', 0) * 2 + sev.get('high', 0)) * 4, 20)
+            if alert_penalty:
+                score -= alert_penalty
+
+            since_24h = (datetime.now() - timedelta(hours=24)).isoformat()
+            fr = conn.execute(
+                "SELECT COUNT(*) AS c FROM auth_attempts WHERE success = 0 AND timestamp >= ?",
+                (since_24h,),
+            ).fetchone()
+            failed_24h = int(fr['c'] or 0) if fr else 0
+            if failed_24h:
+                score -= min(failed_24h * 2, 10)
+
+            cpus = [float(t['cpu']) for t in tel if t['cpu'] is not None]
+            today = datetime.now().strftime('%Y-%m-%d')
+            # Today's alert count is written explicitly, even when it is 0: the
+            # per-day backfill above only produces rows for days that HAVE
+            # alerts, so without this a quiet today would read as "unmeasured".
+            todays = conn.execute(
+                "SELECT COUNT(*) AS c FROM alerts WHERE substr(timestamp, 1, 10) = ?",
+                (today,),
+            ).fetchone()
+            upsert(
+                today,
+                alerts=int(todays['c'] or 0) if todays else 0,
+                score=float(max(0, min(100, score))),
+                avg_cpu=(sum(cpus) / len(cpus) if cpus else None),
+            )
+
+        conn.commit()
+    finally:
+        conn.close()
+    return written
+
+
 def retention_loop():
     # Give startup room to finish before the first sweep.
     time.sleep(120)
@@ -4749,6 +4901,10 @@ def retention_loop():
             prune_old_rows()
         except Exception as e:
             print(f"[RETENTION] sweep failed: {e}")
+        try:
+            snapshot_daily_stats()
+        except Exception as e:
+            print(f"[DAILY-STATS] snapshot failed: {e}")
         time.sleep(RETENTION_INTERVAL_SECONDS)
 
 
@@ -4814,6 +4970,13 @@ if __name__ == '__main__':
     ║                                              ║
     ╚══════════════════════════════════════════════╝
     """)
+
+    # Seed / refresh daily_stats before anything reads it, so the history charts
+    # have data on the very first dashboard load instead of after an hour.
+    try:
+        snapshot_daily_stats()
+    except Exception as e:
+        print(f"[DAILY-STATS] startup snapshot failed: {e}")
 
     cleanup_thread = threading.Thread(target=cleanup_offline_devices, daemon=True)
     cleanup_thread.start()
