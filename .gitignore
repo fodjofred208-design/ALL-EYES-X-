@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Build output
+dist/assets/*.js
+dist/assets/*.css
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local runtime data
+logs/
+*.log
+
+# Local secrets — never commit
+.env
+.env.*
+!.env.example

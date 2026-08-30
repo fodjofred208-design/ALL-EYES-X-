@@ -16,52 +16,60 @@ const NeuralEye: React.FC<{ size?: number; active?: boolean; color?: string; spe
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
   
-  const springConfig = { damping: 18 / speed, stiffness: 150 * speed * 2.2 };
+  const springConfig = { damping: 22, stiffness: 260 * speed };
   const pupilX = useSpring(mouseX, springConfig);
   const pupilY = useSpring(mouseY, springConfig);
 
-  const autoMoveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wanderTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (autoMoveTimer.current) clearTimeout(autoMoveTimer.current);
-      
-      const x = (e.clientX / window.innerWidth - 0.5) * 30;
-      const y = (e.clientY / window.innerHeight - 0.5) * 30;
-      mouseX.set(x);
-      mouseY.set(y);
-
-      autoMoveTimer.current = setTimeout(() => {
-        startAutoMove();
-      }, d(0.7));
+    const stopWander = () => {
+      if (wanderTimer.current) {
+        clearInterval(wanderTimer.current);
+        wanderTimer.current = null;
+      }
     };
 
-    let autoInterval: ReturnType<typeof setInterval> | null = null;
-    const startAutoMove = () => {
-      if (autoInterval) clearInterval(autoInterval);
-      autoInterval = setInterval(() => {
-        const x = (Math.random() - 0.5) * 16;
-        const y = (Math.random() - 0.5) * 16;
-        mouseX.set(x);
-        mouseY.set(y);
-      }, d(0.9));
+    // Idle wander: only runs once the mouse has been still for a moment.
+    // Previously this started on mount and was never stopped while the mouse
+    // moved, so it overwrote the mouse position every 0.9s - two writers
+    // fighting over the same motion values, which is what made it jitter.
+    const startWander = () => {
+      stopWander();
+      wanderTimer.current = setInterval(() => {
+        mouseX.set((Math.random() - 0.5) * 16);
+        mouseY.set((Math.random() - 0.5) * 16);
+      }, d(1.6));
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      // Mouse wins: stop wandering immediately and follow the cursor.
+      stopWander();
+      if (idleTimer.current) clearTimeout(idleTimer.current);
+
+      mouseX.set((e.clientX / window.innerWidth - 0.5) * 30);
+      mouseY.set((e.clientY / window.innerHeight - 0.5) * 30);
+
+      // Resume idle wander only after the mouse has been still.
+      idleTimer.current = setTimeout(startWander, d(1.2));
     };
 
     window.addEventListener('mousemove', handleMouseMove);
-    startAutoMove();
-    
+    // Begin wandering right away so the eye is alive before any mouse input.
+    startWander();
+
+    // Blink every 3 seconds, as specified.
     const blinkInterval = setInterval(() => {
-      if (Math.random() > 0.4) {
-        setIsBlinking(true);
-        setTimeout(() => setIsBlinking(false), 120);
-      }
-    }, d(2.2));
+      setIsBlinking(true);
+      setTimeout(() => setIsBlinking(false), 120);
+    }, d(3));
 
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       clearInterval(blinkInterval);
-      if (autoInterval) clearInterval(autoInterval);
-      if (autoMoveTimer.current) clearTimeout(autoMoveTimer.current);
+      stopWander();
+      if (idleTimer.current) clearTimeout(idleTimer.current);
     };
   }, [mouseX, mouseY, speed]);
 
