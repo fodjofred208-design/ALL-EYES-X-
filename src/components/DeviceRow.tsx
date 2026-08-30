@@ -22,13 +22,35 @@ interface DeviceRowProps {
   index: number;
   onDelete: (deviceId: string) => Promise<boolean>;
   onClick: (deviceId: string) => void;
+  /** Mark this device as the header's Target Node. */
+  onSelectTarget?: (deviceId: string) => void;
+  /** True when this row is the current Target Node. */
+  isTarget?: boolean;
 }
 
-const DeviceRow: React.FC<DeviceRowProps> = ({ device, index, onDelete, onClick }) => {
+const DeviceRow: React.FC<DeviceRowProps> = ({
+  device, index, onDelete, onClick, onSelectTarget, isTarget = false,
+}) => {
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const isOnline = device.status === 'online';
+
+  // Every field below already arrives in /api/devices. None of it is fetched
+  // again here and none of it is invented - when the agent has not reported a
+  // value the cell says so instead of guessing.
+  const alerts = Array.isArray(device.alerts) ? device.alerts.length : 0;
+  const criticals = Array.isArray(device.alerts)
+    ? (device.alerts as Array<Record<string, unknown>>).filter(
+        a => String(a?.severity ?? '').toLowerCase() === 'critical'
+      ).length
+    : 0;
+  const cpu = typeof device.cpu === 'string' ? device.cpu.trim() : '';
+  const ram = typeof device.ram === 'string' ? device.ram.trim() : '';
+  const city = typeof device.city === 'string' ? device.city.trim() : '';
+  const country = typeof device.country === 'string' ? device.country.trim() : '';
+  const location = [city, country].filter(v => v && v !== 'Unknown').join(', ');
+  const mac = typeof device.mac === 'string' ? device.mac : '';
 
   const handleClick = () => {
     if (onClick && !deleting) onClick(device.id);
@@ -37,6 +59,11 @@ const DeviceRow: React.FC<DeviceRowProps> = ({ device, index, onDelete, onClick 
   const handleDeleteClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     setShowDelete(true);
+  };
+
+  const handleTargetClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (onSelectTarget) onSelectTarget(device.id);
   };
 
   const handleConfirmDelete = async () => {
@@ -74,10 +101,11 @@ const DeviceRow: React.FC<DeviceRowProps> = ({ device, index, onDelete, onClick 
           group relative cursor-pointer
           border-b border-green-500/5
           ${deleting ? 'opacity-30 pointer-events-none' : ''}
+          ${isTarget ? 'bg-green-500/[0.05]' : ''}
           transition-all duration-200 hover:bg-green-500/[0.02]
         `}
       >
-        {/* DEVICE column — icon + hostname + IP */}
+        {/* DEVICE column - icon + hostname + IP */}
         <td className="px-4 py-3 whitespace-nowrap">
           <div className="flex items-center gap-3">
             <div className={`relative flex-shrink-0 ${isOnline ? 'text-green-400' : 'text-slate-600'}`}>
@@ -85,10 +113,17 @@ const DeviceRow: React.FC<DeviceRowProps> = ({ device, index, onDelete, onClick 
               <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-900 ${isOnline ? 'bg-green-400' : 'bg-slate-600'}`} />
             </div>
             <div className="min-w-0">
-              <p className="text-sm font-medium text-white truncate max-w-[180px]">
+              <p className="text-sm font-medium text-white truncate max-w-[180px] flex items-center gap-1.5">
                 {device.hostname || 'Unknown'}
+                {isTarget && (
+                  <span className="text-[8px] font-bold uppercase tracking-widest text-green-400 bg-green-400/10 border border-green-400/20 rounded px-1 py-px flex-shrink-0">
+                    target
+                  </span>
+                )}
               </p>
-              <p className="text-xs text-slate-500 font-mono truncate">{device.ip}</p>
+              <p className="text-xs text-slate-500 font-mono truncate" title={mac || undefined}>
+                {device.ip}
+              </p>
             </div>
           </div>
         </td>
@@ -99,6 +134,32 @@ const DeviceRow: React.FC<DeviceRowProps> = ({ device, index, onDelete, onClick 
             <DeviceIcon hostname={device.hostname} os={device.os_name} size={16} className="text-slate-500 flex-shrink-0" />
             <span className="truncate max-w-[140px]">{device.os_name || 'Unknown'}</span>
           </span>
+        </td>
+
+        {/* HARDWARE column - reported CPU model and RAM capacity */}
+        <td className="px-4 py-3 whitespace-nowrap hidden xl:table-cell">
+          <p className="text-xs text-slate-300 truncate max-w-[190px]" title={cpu || undefined}>
+            {cpu || 'Not reported'}
+          </p>
+          <p className="text-[11px] text-slate-500 font-mono">
+            {ram || 'RAM unknown'}
+          </p>
+        </td>
+
+        {/* ALERTS column - real count from this device's alert list */}
+        <td className="px-4 py-3 whitespace-nowrap hidden md:table-cell">
+          {alerts === 0 ? (
+            <span className="text-xs text-slate-600">None</span>
+          ) : (
+            <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border ${
+              criticals > 0
+                ? 'text-red-300 bg-red-400/10 border-red-400/20'
+                : 'text-amber-300 bg-amber-400/10 border-amber-400/20'
+            }`}>
+              {alerts}
+              {criticals > 0 && <span className="text-[9px] uppercase tracking-wide">{criticals} crit</span>}
+            </span>
+          )}
         </td>
 
         {/* STATUS column */}
@@ -114,24 +175,47 @@ const DeviceRow: React.FC<DeviceRowProps> = ({ device, index, onDelete, onClick 
           </span>
         </td>
 
-        {/* LAST SEEN column — hidden on small screens */}
+        {/* LOCATION column - only what geolocation actually resolved */}
+        <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-500 hidden lg:table-cell">
+          {location || <span className="text-slate-700">Unresolved</span>}
+        </td>
+
+        {/* LAST SEEN column - hidden on small screens */}
         <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-500 font-mono hidden md:table-cell">
           {relativeTime(device.last_seen)}
         </td>
 
         {/* ACTIONS column */}
         <td className="px-4 py-3 whitespace-nowrap text-right">
-          <button
-            onClick={handleDeleteClick}
-            disabled={deleting}
-            title="Remove device"
-            className="p-1.5 rounded-md text-slate-600 hover:text-red-400 hover:bg-red-400/10 transition-colors opacity-0 group-hover:opacity-100"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="3 6 5 6 21 6" />
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-            </svg>
-          </button>
+          <div className="inline-flex items-center gap-1">
+            {onSelectTarget && (
+              <button
+                onClick={handleTargetClick}
+                disabled={deleting || isTarget}
+                title={isTarget ? 'Current Target Node' : 'Set as Target Node'}
+                className={`p-1.5 rounded-md transition-colors ${
+                  isTarget
+                    ? 'text-green-400 cursor-default'
+                    : 'text-slate-600 hover:text-green-400 hover:bg-green-400/10 opacity-0 group-hover:opacity-100'
+                }`}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2" />
+                </svg>
+              </button>
+            )}
+            <button
+              onClick={handleDeleteClick}
+              disabled={deleting}
+              title="Remove device"
+              className="p-1.5 rounded-md text-slate-600 hover:text-red-400 hover:bg-red-400/10 transition-colors opacity-0 group-hover:opacity-100"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+            </button>
+          </div>
         </td>
       </motion.tr>
 

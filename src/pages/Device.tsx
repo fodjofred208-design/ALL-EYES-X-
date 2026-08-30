@@ -1,26 +1,66 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import BackButton from '../components/BackButton';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useDevices } from '../context/DeviceContext';
 import DeviceRow from '../components/DeviceRow';
 import DeviceIcon from '../components/DeviceIcon';
+import {
+  sortDevices,
+  defaultSortDir,
+  deviceAlertCount,
+  type DeviceSortKey,
+  type DeviceSortDir,
+} from '../utils/deviceSort';
+
+type SortKey = DeviceSortKey;
+type SortDir = DeviceSortDir;
+
+const alertCount = deviceAlertCount;
 
 const Devices: React.FC = () => {
-  const { devices, loading, error, removeDevice } = useDevices();
+  const { devices, loading, error, removeDevice, selectedDeviceId, setSelectedDeviceId } = useDevices();
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline'>('all');
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>('last_seen');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
-  const filtered = devices.filter(d => {
+  const filtered = useMemo(() => {
     const q = searchTerm.toLowerCase();
-    const matchSearch = !q || d.hostname?.toLowerCase().includes(q) || d.ip?.includes(q) || d.id?.toLowerCase().includes(q);
-    const matchStatus = statusFilter === 'all' || (statusFilter === 'online' ? d.status === 'online' : d.status !== 'online');
-    return matchSearch && matchStatus;
-  });
+    const rows = devices.filter(d => {
+      const matchSearch = !q
+        || d.hostname?.toLowerCase().includes(q)
+        || d.ip?.includes(q)
+        || d.id?.toLowerCase().includes(q)
+        || (typeof d.cpu === 'string' && d.cpu.toLowerCase().includes(q))
+        || (typeof d.city === 'string' && d.city.toLowerCase().includes(q));
+      const matchStatus = statusFilter === 'all'
+        || (statusFilter === 'online' ? d.status === 'online' : d.status !== 'online');
+      return matchSearch && matchStatus;
+    });
+
+    return sortDevices(rows, sortKey, sortDir);
+  }, [devices, searchTerm, statusFilter, sortKey, sortDir]);
+
+  const toggleSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      // Newest first and Z-A first read better as the default for these columns.
+      setSortDir(defaultSortDir(key));
+    }
+  };
 
   const handleViewDevice = (deviceId: string) => navigate(`/device/${deviceId}`);
+  const handleSelectTarget = (deviceId: string) => {
+    setSelectedDeviceId(deviceId);
+    const d = devices.find(x => x.id === deviceId);
+    setActionMsg({ type: 'success', text: `Target Node set to ${d?.hostname ?? deviceId}` });
+    setTimeout(() => setActionMsg(null), 3500);
+  };
   const handleDelete = async (deviceId: string): Promise<boolean> => {
     const ok = await removeDevice(deviceId);
     setActionMsg(ok ? { type: 'success', text: 'Device removed' } : { type: 'error', text: 'Delete failed' });
@@ -30,6 +70,7 @@ const Devices: React.FC = () => {
 
   const onlineCount = devices.filter(d => d.status === 'online').length;
   const offlineCount = devices.filter(d => d.status !== 'online').length;
+  const totalAlerts = devices.reduce((n, d) => n + alertCount(d), 0);
 
   if (loading && devices.length === 0) {
     return (
@@ -53,6 +94,21 @@ const Devices: React.FC = () => {
     );
   }
 
+  const Th: React.FC<{ label: string; sort: SortKey; className?: string }> = ({ label, sort, className = '' }) => (
+    <th className={`px-4 py-3 text-left text-xs font-bold text-green-400 uppercase tracking-wider ${className}`}>
+      <button
+        onClick={() => toggleSort(sort)}
+        className="inline-flex items-center gap-1 hover:text-green-300 transition-colors"
+        title={`Sort by ${label.toLowerCase()}`}
+      >
+        {label}
+        <span className={`text-[9px] ${sortKey === sort ? 'text-green-300' : 'text-green-400/25'}`}>
+          {sortKey === sort ? (sortDir === 'asc' ? '\u25B2' : '\u25BC') : '\u25C7'}
+        </span>
+      </button>
+    </th>
+  );
+
   return (
     <div className="space-y-6">
       {/* HEADER */}
@@ -62,6 +118,7 @@ const Devices: React.FC = () => {
           <h2 className="text-xl font-bold text-green-400 uppercase tracking-wider">Devices Inventory</h2>
           <p className="text-sm text-slate-500">
             {devices.length} total &middot; {onlineCount} online &middot; {offlineCount} offline
+            {totalAlerts > 0 && <> &middot; <span className="text-amber-400">{totalAlerts} alert{totalAlerts === 1 ? '' : 's'}</span></>}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -82,7 +139,7 @@ const Devices: React.FC = () => {
           </svg>
           <input
             type="text"
-            placeholder="Search by hostname, IP, or ID..."
+            placeholder="Search by hostname, IP, ID, CPU, or city..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full pl-10 pr-4 py-2 text-sm bg-slate-800/50 border border-slate-700/30 rounded-lg text-slate-200 placeholder-slate-700 focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors"
@@ -147,22 +204,36 @@ const Devices: React.FC = () => {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-green-500/10">
-                  <th className="px-4 py-3 text-left text-xs font-bold text-green-400 uppercase tracking-wider">Device</th>
-                  <th className="px-4 py-3 text-left text-xs font-bold text-green-400 uppercase tracking-wider">OS</th>
-                  <th className="px-4 py-3 text-left text-xs font-bold text-green-400 uppercase tracking-wider">Status</th>
-                  <th className="px-4 py-3 text-left text-xs font-bold text-green-400 uppercase tracking-wider hidden md:table-cell">Last Seen</th>
+                  <Th label="Device" sort="hostname" />
+                  <Th label="OS" sort="os" />
+                  <Th label="Hardware" sort="hardware" className="hidden xl:table-cell" />
+                  <Th label="Alerts" sort="alerts" className="hidden md:table-cell" />
+                  <Th label="Status" sort="status" />
+                  <Th label="Location" sort="location" className="hidden lg:table-cell" />
+                  <Th label="Last Seen" sort="last_seen" className="hidden md:table-cell" />
                   <th className="px-4 py-3 text-right text-xs font-bold text-green-400 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-green-500/5">
                 <AnimatePresence mode="popLayout">
                   {filtered.map((device, i) => (
-                    <DeviceRow key={device.id} device={device} index={i} onDelete={handleDelete} onClick={handleViewDevice} />
+                    <DeviceRow
+                      key={device.id}
+                      device={device}
+                      index={i}
+                      onDelete={handleDelete}
+                      onClick={handleViewDevice}
+                      onSelectTarget={handleSelectTarget}
+                      isTarget={device.id === selectedDeviceId}
+                    />
                   ))}
                 </AnimatePresence>
               </tbody>
             </table>
           </div>
+          <p className="px-4 py-2 text-[10px] text-slate-600 border-t border-green-500/5">
+            Click a column header to sort &middot; hover a row for Target Node and remove
+          </p>
         </div>
       )}
     </div>
