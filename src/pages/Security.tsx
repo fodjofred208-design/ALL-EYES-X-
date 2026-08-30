@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import BackButton from '../components/BackButton';
 import { 
   ShieldCheck, 
   ShieldAlert, 
@@ -215,6 +216,7 @@ const Security = () => {
     <div className="max-w-7xl mx-auto space-y-8 p-4">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
+          <BackButton />
           <h1 className="text-3xl font-bold font-orbitron tracking-tight text-white uppercase">
             Threat <span className="text-green-500">Neutralization</span>
           </h1>

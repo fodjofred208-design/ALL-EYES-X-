@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import BackButton from '../components/BackButton';
 import { ShieldAlert, Copy, Check, Filter } from 'lucide-react';
 import { useDashboard } from '../context/DashboardContext';
 import { relativeTime } from '../utils/format';
@@ -53,6 +54,7 @@ const AlertCenter: React.FC = () => {
   return (
     <div className="space-y-4">
       <div>
+        <BackButton />
         <h1 className="text-2xl md:text-3xl font-orbitron font-bold tracking-[0.3em] neon-text">ALERT CENTER</h1>
         <p className="mt-1 text-[10px] font-mono-data text-[#22c55e] tracking-[0.35em] uppercase">Detailed alert analysis · all severities</p>
         <div className="aeyes-divider mt-2 w-64 md:w-96" />

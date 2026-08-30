@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import BackButton from '../components/BackButton';
 import { Share2, Download, Upload, File, HardDrive, Search, ArrowRight, ShieldCheck, Zap, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useSocket } from '../context/SocketContext';
@@ -148,6 +149,7 @@ const P2PShare = () => {
     <div className="max-w-7xl mx-auto space-y-8 p-4">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
+          <BackButton />
           <h1 className="text-3xl font-bold font-orbitron tracking-tight text-white uppercase">
             Neural <span className="text-green-500">Injection</span>
           </h1>

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import BackButton from '../components/BackButton';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Settings, MousePointer2, Keyboard, RefreshCw,
@@ -304,6 +305,7 @@ const LiveMonitor = () => {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
+          <BackButton />
           <h1 className="text-3xl font-bold font-orbitron tracking-tight text-white uppercase">
             Live <span className="text-green-500">Surveillance</span>
           </h1>

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import BackButton from '../components/BackButton';
 import { Camera, CameraOff, Video, RefreshCw, Download, Settings, Shield, Sun } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
@@ -205,6 +206,7 @@ const Webcam = () => {
     <div className="max-w-7xl mx-auto space-y-6 p-4">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
+          <BackButton />
           <h1 className="text-3xl font-bold font-orbitron tracking-tight text-white uppercase">
             Webcam <span className="text-green-500">Surveillance</span>
           </h1>

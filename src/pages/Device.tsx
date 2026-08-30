@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import BackButton from '../components/BackButton';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useDevices } from '../context/DeviceContext';
@@ -57,6 +58,7 @@ const Devices: React.FC = () => {
       {/* HEADER */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
+          <BackButton />
           <h2 className="text-xl font-bold text-green-400 uppercase tracking-wider">Devices Inventory</h2>
           <p className="text-sm text-slate-500">
             {devices.length} total &middot; {onlineCount} online &middot; {offlineCount} offline

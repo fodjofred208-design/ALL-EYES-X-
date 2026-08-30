@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import BackButton from '../components/BackButton';
 import { Terminal as TerminalIcon, ShieldAlert, Hash, Globe, ChevronRight, Zap, Download, Trash2, Layers } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useDevices } from '../context/DeviceContext';
@@ -264,6 +265,7 @@ const Terminal = () => {
           <div className="p-2 bg-green-500/10 border border-green-500/30 rounded-lg">
              <TerminalIcon size={20} className="text-green-500" />
           </div>
+          <BackButton />
           <h1 className="text-2xl font-bold font-orbitron tracking-tight text-white uppercase">
             Control <span className="text-green-500">Terminal</span>
           </h1>

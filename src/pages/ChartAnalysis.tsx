@@ -1,4 +1,5 @@
 import React from 'react';
+import BackButton from '../components/BackButton';
 import { BarChart3 } from 'lucide-react';
 import { useDashboard } from '../context/DashboardContext';
 import { useDevices } from '../context/DeviceContext';
@@ -15,6 +16,7 @@ const ChartAnalysis: React.FC = () => {
     <div className="space-y-4">
       <div>
         <div className="flex items-center gap-3 flex-wrap">
+          <BackButton />
           <h1 className="text-2xl md:text-3xl font-orbitron font-bold tracking-[0.28em] text-white aeyes-title-glow">
             CRITICAL <span className="text-[#22c55e]">CHART ANALYSIS</span>
           </h1>
