@@ -404,12 +404,21 @@ const Webcam = () => {
 
           {/* MORE FEATURE — multi-camera wall */}
           <div className="glass-card p-4 border-green-500/10">
-            <button onClick={() => navigate('/device-wall')} className="w-full flex items-center justify-between group">
-              <span className="flex items-center gap-2 text-[10px] font-orbitron uppercase tracking-[0.25em] text-green-400 group-hover:text-green-300">
-                <Camera size={14} /> Multi-Cam
+            {/* Square tile — compact and prominent. */}
+            <button
+              onClick={() => navigate('/device-wall')}
+              title="Watch several cameras at once"
+              className="w-40 h-40 rounded-2xl border border-green-500/25 bg-green-500/[0.06] hover:bg-green-600/15 hover:border-green-500/60 transition-all flex flex-col items-center justify-center gap-3 group shrink-0"
+            >
+              <Camera size={30} className="text-green-400 group-hover:text-green-300" />
+              <span className="text-[11px] font-orbitron uppercase tracking-[0.2em] text-green-400 group-hover:text-green-300">
+                Multi-Cam
               </span>
-              <span className="text-[9px] font-mono-data text-slate-500 group-hover:text-green-400">
-                open full page →
+              <span className="text-[8px] font-mono-data text-slate-500 px-3 text-center leading-relaxed">
+                Watch several cameras at once
+              </span>
+              <span className="text-[8px] font-orbitron uppercase tracking-widest text-green-500/70 group-hover:text-green-300">
+                open →
               </span>
             </button>
 
