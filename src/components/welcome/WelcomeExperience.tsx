@@ -43,7 +43,10 @@ const WelcomeExperience: React.FC = () => {
   const { dismiss } = useWelcome();
 
   return (
-    <div className="aeyes-welcome-bg relative min-h-[80vh] w-full flex flex-col items-center justify-center px-6 overflow-hidden">
+    /* Full viewport height with the fixed 4rem header accounted for, so the
+       block sits optically centred instead of riding high with dead space
+       underneath. */
+    <div className="aeyes-welcome-bg relative min-h-screen w-full pt-16 pb-10 flex flex-col items-center justify-center px-6 overflow-hidden">
       {/* constellation — same as loading screen, green */}
       <div className="absolute inset-0 z-0">
         <ConstellationBackground color="#22c55e" />

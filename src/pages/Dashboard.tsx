@@ -86,7 +86,11 @@ const DashboardPage: React.FC = () => {
   }
 
   return (
-    <div className="relative space-y-4">
+    /* pt-20 clears the fixed h-16 top bar; every other route gets this from the
+       <Panel> wrapper, but the Dashboard route supplies its own provider instead
+       so it needs the offset here. Without it the COMMAND CENTER title sat
+       underneath the header bar. */
+    <div className="relative space-y-4 pt-20 pb-16 px-4 md:px-8">
       <AmbientBackground variant="squares" className="fixed inset-0 -z-10" />
       <div className="aeyes-grain" />
 
