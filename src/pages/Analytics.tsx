@@ -51,12 +51,14 @@ const Analytics = () => {
   }, [socket, fetchAnalytics]);
 
   // Build chart data from real analytics only. Unknown metrics stay at 0 instead of being simulated.
+  // Hourly activity over the last 24h. This chart used to hardcode
+  // cpu/ram/disk to 0 and draw three flat lines labelled "CPU %", "RAM %" and
+  // "DISK %" - measurements it never had. The analytics endpoint has no
+  // cpu/ram/disk time series, so it now plots the one series it does return.
   const hardwareUsage = analyticsData?.timeline
-    ? analyticsData.timeline.labels.map((label: string) => ({
+    ? analyticsData.timeline.labels.map((label: string, i: number) => ({
         name: label,
-        cpu: 0,
-        ram: 0,
-        disk: 0,
+        activity: analyticsData.timeline.values?.[i] ?? 0,
       }))
     : [];
 
@@ -64,6 +66,15 @@ const Analytics = () => {
     ? analyticsData.os_chart.labels.map((label: string, i: number) => ({
         name: label,
         value: analyticsData.os_chart.values[i] || 0,
+      }))
+    : [];
+
+  // Device count by country. The "Network Segmentation" pie used to be fed
+  // os_chart, so it showed the OS breakdown under a networking title.
+  const countryData = analyticsData?.country_chart
+    ? analyticsData.country_chart.labels.map((label: string, i: number) => ({
+        name: label,
+        value: analyticsData.country_chart.values[i] || 0,
       }))
     : [];
 
@@ -126,15 +137,15 @@ const Analytics = () => {
       </AnimatePresence>
 
       <div className={`grid grid-cols-1 lg:grid-cols-2 gap-8 transition-all duration-1000 ${hasData ? 'blur-0' : 'blur-xl'}`}>
-        {/* Resource Usage Line Chart */}
+        {/* Hourly activity line chart */}
         <div className="glass-card p-6">
           <div className="flex justify-between items-center mb-8">
-            <h3 className="text-sm font-orbitron text-white uppercase tracking-widest">Hardware Telemetry</h3>
+            <h3 className="text-sm font-orbitron text-white uppercase tracking-widest">Activity — Last 24 Hours</h3>
             <RefreshCw size={16} className="text-slate-500 cursor-pointer hover:rotate-180 transition-transform duration-700" onClick={fetchAnalytics} />
           </div>
           <div className="h-[300px]">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={hardwareUsage.length > 0 ? hardwareUsage : [{ name: '--', cpu: 0, ram: 0, disk: 0 }]}>
+              <LineChart data={hardwareUsage.length > 0 ? hardwareUsage : [{ name: '--', activity: 0 }]}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
                 <XAxis dataKey="name" stroke="#ffffff10" fontSize={10} axisLine={false} tickLine={false} />
                 <YAxis stroke="#ffffff10" fontSize={10} axisLine={false} tickLine={false} />
@@ -142,15 +153,13 @@ const Analytics = () => {
                   contentStyle={{ backgroundColor: '#0a0e1a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', fontFamily: 'Share Tech Mono' }}
                   itemStyle={{ fontSize: '12px' }}
                 />
-                <Line type="monotone" dataKey="cpu" stroke="#22c55e" strokeWidth={2} dot={false} name="CPU %" />
-                <Line type="monotone" dataKey="ram" stroke="#00d4ff" strokeWidth={2} dot={false} name="RAM %" />
-                <Line type="monotone" dataKey="disk" stroke="#ef4444" strokeWidth={2} dot={false} name="DISK %" />
+                <Line type="monotone" dataKey="activity" stroke="#22c55e" strokeWidth={2} dot={false} name="Events" />
               </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        {/* Traffic Distribution Bar Chart */}
+        {/* OS distribution bar chart */}
         <div className="glass-card p-6">
           <div className="flex justify-between items-center mb-8">
             <h3 className="text-sm font-orbitron text-white uppercase tracking-widest">OS Distribution</h3>
@@ -178,12 +187,12 @@ const Analytics = () => {
 
         {/* Segmented Share Pie Chart */}
         <div className="glass-card p-6 lg:col-span-1">
-          <h3 className="text-sm font-orbitron text-white mb-8 uppercase tracking-widest">Network Segmentation</h3>
+          <h3 className="text-sm font-orbitron text-white mb-8 uppercase tracking-widest">Devices by Country</h3>
           <div className="h-[250px] relative">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
-                  data={trafficData.length > 0 ? trafficData : [{ name: 'Empty', value: 1 }]}
+                  data={countryData.length > 0 ? countryData : [{ name: 'No location data', value: 1 }]}
                   cx="50%"
                   cy="50%"
                   innerRadius={60}
@@ -191,7 +200,7 @@ const Analytics = () => {
                   paddingAngle={5}
                   dataKey="value"
                 >
-                  {trafficData.map((_: any, index: number) => (
+                  {countryData.map((_: any, index: number) => (
                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>

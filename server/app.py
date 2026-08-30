@@ -1187,7 +1187,7 @@ def login():
                     'threshold': AUTH_LOCK_THRESHOLD,
                     'error': 'Security state active. Enter recovery phrase.'
                 }), 423
-            return render_template('login.html', error='Security state active')
+            return serve_spa()
 
         if username == ADMIN_USER and password == ADMIN_PASS:
             session['user'] = username
@@ -1197,7 +1197,7 @@ def login():
             activity('AUTH SUCCESS', username=username, ip=ip)
             add_notification('auth', f'LOGIN SUCCESS: {username} from {ip}')
             if request.is_json:
-                return jsonify({'success': True, 'redirect': url_for('loading')})
+                return jsonify({'success': True, 'redirect': '/'})
             return redirect(url_for('loading'))
 
         record_auth_attempt(username, False, ip)
@@ -1216,9 +1216,9 @@ def login():
                 'locked': attempts >= AUTH_LOCK_THRESHOLD,
                 'error': message
             }), 401
-        return render_template('login.html', error='Invalid credentials')
+        return serve_spa()
 
-    return render_template('login.html')
+    return serve_spa()
 
 
 @app.route('/api/auth/recover', methods=['POST'])
@@ -1264,61 +1264,117 @@ def logout():
 
 # ============================================================
 # ROUTES: PAGES
+#
+# These used to call render_template('dashboard.html') and friends. No such
+# templates exist - the UI is a React SPA built into dist/. Every one of these
+# routes therefore raised TemplateNotFound and returned HTTP 500. In the normal
+# Caddy deployment they are unreachable (Caddy sends everything except /api and
+# /socket.io to Vite), but running `python server/app.py` on its own - which the
+# README documents - gave a 500 on every page.
+#
+# They now serve the built SPA, so Flask alone is usable, and fall back to a
+# plain explanation instead of a 500 when dist/ has not been built.
 # ============================================================
+DIST_DIR = os.path.abspath(os.path.join(BASE_DIR, '..', 'dist'))
+
+
+def serve_spa():
+    """Serve the built React app, or explain that it has not been built yet."""
+    index_path = os.path.join(DIST_DIR, 'index.html')
+    if os.path.isfile(index_path):
+        return send_file(index_path)
+    return jsonify({
+        'error': 'Frontend not built',
+        'message': (
+            'No dist/index.html found. Run `npm install && npm run build` in the '
+            'project root, or serve the UI through Caddy/Vite as documented in '
+            'the README.'
+        ),
+        'expected_path': index_path,
+    }), 404
+
+
 @app.route('/')
 @login_required
 def index():
-    return redirect(url_for('loading'))
+    return serve_spa()
 
 @app.route('/loading')
 @login_required
 def loading():
-    return render_template('loading.html')
+    return serve_spa()
 
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    return render_template('dashboard.html')
+    return serve_spa()
 
 @app.route('/analytics')
 @login_required
 def analytics():
-    return render_template('analytics.html')
+    return serve_spa()
 
 @app.route('/devices')
 @login_required
 def devices():
-    return render_template('devices.html')
+    return serve_spa()
 
 @app.route('/live_monitor')
 @login_required
 def live_monitor():
-    return render_template('live_monitor.html')
+    return serve_spa()
 
 @app.route('/terminal')
 @login_required
 def terminal():
-    return render_template('terminal.html')
+    return serve_spa()
 
 @app.route('/webcam')
 @login_required
 def webcam():
-    return render_template('webcam.html')
+    return serve_spa()
 
 @app.route('/touch_monitor')
 @login_required
 def touch_monitor():
-    return render_template('touch_monitor.html')
+    return serve_spa()
 
 @app.route('/p2p_share')
 @login_required
 def p2p_share():
-    return render_template('p2p_share.html')
+    return serve_spa()
 
 @app.route('/security')
 @login_required
 def security():
-    return render_template('security.html')
+    return serve_spa()
+
+@app.route('/multi-shell')
+@login_required
+def multi_shell():
+    return serve_spa()
+
+@app.route('/device-wall')
+@login_required
+def device_wall():
+    return serve_spa()
+
+@app.route('/device/<device_id>')
+@login_required
+def device_page(device_id):
+    # Deep links into the SPA; React Router resolves the id client-side.
+    return serve_spa()
+
+
+@app.route('/assets/<path:filename>')
+def serve_spa_asset(filename):
+    """The SPA's hashed JS/CSS bundles, so Flask alone can serve a working UI."""
+    return send_from_directory(os.path.join(DIST_DIR, 'assets'), filename)
+
+
+@app.route('/favicon.svg')
+def serve_favicon():
+    return send_from_directory(DIST_DIR, 'favicon.svg')
 
 
 # ============================================================
@@ -1327,7 +1383,15 @@ def security():
 @app.route('/api/register', methods=['POST'])
 def api_register():
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True, silent=True) or {}
+        # This route is unauthenticated (the agent has no session), so without a
+        # check any empty POST created a junk device row named after the server
+        # host with OS 'Unknown'. Require something that identifies a machine.
+        if not (data.get('device_id') or data.get('hostname') or data.get('mac')):
+            return jsonify({
+                'success': False,
+                'error': 'device_id, hostname or mac is required',
+            }), 400
         device_id = data.get('device_id', '')
         
         if not device_id:
@@ -3402,8 +3466,10 @@ def poll_touch_events(device_id):
 @app.route('/api/touch/ack/<device_id>', methods=['POST'])
 def ack_touch_event(device_id):
     global touch_event_queues
-    
-    data = request.get_json()
+
+    # silent=True: get_json() raises BadRequest on an empty or malformed body,
+    # which surfaced as a 500 before the `if not data` guard could answer 400.
+    data = request.get_json(silent=True)
     if not data:
         return jsonify({'error': 'No data'}), 400
     
@@ -3673,6 +3739,8 @@ def api_webcam_latest(device_id):
 @app.route('/api/webcam/<device_id>/start', methods=['POST'])
 @login_required
 def start_webcam(device_id):
+    if device_id not in connected_devices:
+        return jsonify({'error': 'Device not found'}), 404
     data = request.get_json() or {}
     camera = data.get('camera', 'front')
     interval = data.get('interval', 200)
@@ -3695,6 +3763,8 @@ def start_webcam(device_id):
 @app.route('/api/webcam/<device_id>/stop', methods=['POST'])
 @login_required
 def stop_webcam(device_id):
+    if device_id not in connected_devices:
+        return jsonify({'error': 'Device not found'}), 404
     payload = {'device_id': device_id, 'command': 'stop'}
     socketio.emit('webcam_command', payload)
     _queue_webcam_command(device_id, payload, 'stop')
@@ -3705,6 +3775,8 @@ def stop_webcam(device_id):
 @app.route('/api/webcam/<device_id>/switch', methods=['POST'])
 @login_required
 def switch_webcam(device_id):
+    if device_id not in connected_devices:
+        return jsonify({'error': 'Device not found'}), 404
     data = request.get_json() or {}
     camera = data.get('camera', 'front')
 
@@ -4679,9 +4751,17 @@ def api_analytics_data():
 @login_required
 def api_alert_resolve(alert_id):
     conn = get_db()
-    conn.execute("UPDATE alerts SET status='resolved' WHERE id=?", (alert_id,))
+    cur = conn.execute("UPDATE alerts SET status='resolved' WHERE id=?", (alert_id,))
+    affected = cur.rowcount
     conn.commit()
     conn.close()
+    if not affected:
+        # Previously this returned 200 and wrote a success audit entry for an
+        # alert that did not exist, so a stale UI could "resolve" nothing and
+        # the audit log recorded an action that never happened.
+        audit_event(session.get('user', 'system'), '', 'alert_resolved', 'failed',
+                    f'alert {alert_id} not found')
+        return jsonify({'error': 'Alert not found'}), 404
     audit_event(session.get('user', 'system'), '', 'alert_resolved', 'ok', str(alert_id))
     return jsonify({'success': True, 'id': alert_id}), 200
 
@@ -4952,7 +5032,12 @@ def serve_static(filename):
 
 @app.route('/manifest.json')
 def serve_manifest():
-    return send_from_directory('.', 'manifest.json')
+    # There is no manifest.json in this project; send_from_directory raised
+    # NotFound as a 500-prone path. Serve it from dist if one is ever added.
+    candidate = os.path.join(DIST_DIR, 'manifest.json')
+    if os.path.isfile(candidate):
+        return send_from_directory(DIST_DIR, 'manifest.json')
+    return jsonify({'error': 'No manifest.json in this deployment'}), 404
 
 
 # ============================================================
