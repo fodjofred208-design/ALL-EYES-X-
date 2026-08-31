@@ -1364,10 +1364,18 @@ def loading():
 def dashboard():
     return serve_spa()
 
+@app.route('/analysis')
+@login_required
+def analysis():
+    return serve_spa()
+
 @app.route('/analytics')
 @login_required
 def analytics():
-    return serve_spa()
+    # The old Analytics page was folded into Analysis. Redirect rather than serve
+    # a path React Router no longer knows, which would dump the user on the
+    # dashboard instead of where they meant to go.
+    return redirect('/analysis')
 
 @app.route('/devices')
 @login_required
@@ -1536,6 +1544,39 @@ def api_register():
         is_new = device_id not in connected_devices
         save_device_to_db(device_info)
         save_device_extras(device_id, device_info)
+
+        # The agent also sends install_date and language at registration. They
+        # live in os_info, and this handler used to drop them on the floor - so a
+        # device that registered but had not yet uploaded its hardware inventory
+        # showed blank fields in the Device Detail OS panel. Persist whatever the
+        # registration actually carries, without clobbering richer values the
+        # hardware upload may already have written.
+        _os_fields = {
+            'os_name': data.get('os'),
+            'os_version': data.get('os_version'),
+            'architecture': data.get('architecture'),
+            'install_date': data.get('install_date'),
+            'language': data.get('language'),
+        }
+        _os_fields = {k: v for k, v in _os_fields.items() if v not in (None, '')}
+        if _os_fields:
+            _cols = ', '.join(_os_fields.keys())
+            _marks = ', '.join('?' for _ in _os_fields)
+            _upd = ', '.join(
+                f"{k}=COALESCE(NULLIF(excluded.{k}, ''), {k})" for k in _os_fields
+            )
+            _conn = get_db()
+            try:
+                _conn.execute(
+                    f"INSERT INTO os_info (device_id, {_cols}) VALUES (?, {_marks}) "
+                    f"ON CONFLICT(device_id) DO UPDATE SET {_upd}",
+                    (device_id, *_os_fields.values()),
+                )
+                _conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                _conn.close()
         
         if is_new:
             device_info['registered_at'] = now_iso
