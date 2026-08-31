@@ -15,6 +15,8 @@ import {
   isDeferred,
   dataStateLabel,
 } from '../components/analysis/capabilities';
+import NmapScanner from '../components/analysis/NmapScanner';
+import NetworkDiscovery from '../components/analysis/NetworkDiscovery';
 import {
   RiskRankingModule,
   OpenPortsModule,
@@ -23,6 +25,7 @@ import {
   ProtocolStatistics,
   TopTalkersModule,
   SessionsModule,
+  FleetCompositionModule,
 } from '../components/analysis/modules';
 
 /**
@@ -53,6 +56,7 @@ const Analysis: React.FC = () => {
   const [talkers, setTalkers] = useState<any>(null);
   const [sessions, setSessions] = useState<any>(null);
   const [scans, setScans] = useState<any[]>([]);
+  const [analytics, setAnalytics] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -64,14 +68,16 @@ const Analysis: React.FC = () => {
   const load = useCallback(async () => {
     try {
       const scope = deviceId && deviceId !== 'all' ? `?device_id=${encodeURIComponent(deviceId)}` : '';
-      const [r, e, t, s, n] = await Promise.all([
+      const [r, e, t, s, n, an] = await Promise.all([
         j(`/api/analysis/devices${scope}`),
         j(`/api/analysis/endpoints${scope}`),
         j('/api/analysis/talkers'),
         j('/api/analysis/sessions'),
         j('/api/security/nmap/scans'),
+        j('/api/analytics'),
       ]);
       setRisk(r); setEndpoints(e); setTalkers(t); setSessions(s);
+      setAnalytics(an);
       setScans(Array.isArray(n?.scans) ? n.scans : []);
       setError(null);
     } catch (err: any) {
@@ -246,8 +252,18 @@ const Analysis: React.FC = () => {
           </h3>
           <EndpointSecurityModule devices={endpointDevices} />
         </div>
-        <ReuseLink to="/security" icon={<Radar size={14} />} label="Network Discovery"
-          note="Authorized network scans run through the existing discovery service. Opened here rather than duplicated, so both views share one implementation." />
+        <div>
+          <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
+            Fleet Composition · Activity, OS and location
+          </h3>
+          <FleetCompositionModule analytics={analytics} />
+        </div>
+        <div>
+          <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
+            Network Discovery · {dataStateLabel(findModule('discovery')!)}
+          </h3>
+          <NetworkDiscovery />
+        </div>
       </AnalysisSection>
 
       {/* ---------------- 02 PORTS ---------------- */}
@@ -257,8 +273,11 @@ const Analysis: React.FC = () => {
           <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
             Nmap Vulnerability Scanner · {scans.length} scan(s) recorded
           </h3>
-          <ReuseLink to="/security" icon={<Radar size={14} />} label="Open Nmap Scanner"
-            note="Scans are authorized network-analysis operations launched explicitly by an operator. Uses the existing nmap service and scan history; an nmap result is a scan finding, never a confirmed vulnerability." />
+          <NmapScanner />
+          <p className="mt-2 text-[9px] font-mono-data text-slate-600">
+            Scans are authorized network-analysis operations launched explicitly by an operator.
+            An nmap result is a scan finding, never a confirmed vulnerability.
+          </p>
         </div>
         <div>
           <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">

@@ -9,7 +9,7 @@ const ACTIONS = [
   { label: 'Touch Monitor', path: '/touch_monitor', icon: <Fingerprint size={16} /> },
   { label: 'Webcam', path: '/webcam', icon: <Camera size={16} /> },
   { label: 'Terminal', path: '/terminal', icon: <Terminal size={16} /> },
-  { label: 'Analytics', path: '/analytics', icon: <BarChart3 size={16} /> },
+  { label: 'Analysis', path: '/analysis', icon: <BarChart3 size={16} /> },
   { label: 'Alert Center', path: '/security', icon: <ShieldCheck size={16} /> },
   { label: 'Notifications', path: null, icon: <Bell size={16} /> },
 ];

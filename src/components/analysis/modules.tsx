@@ -1,5 +1,9 @@
 import React, { useMemo } from 'react';
 import { motion } from 'framer-motion';
+import {
+  ResponsiveContainer, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip,
+} from 'recharts';
 import { useNavigate } from 'react-router-dom';
 import { findModule } from './capabilities';
 import SensorRequired from './SensorRequired';
@@ -410,6 +414,111 @@ export const SessionsModule: React.FC<{ sessions: any }> = ({ sessions }) => {
       </div>
 
       <p className="text-[9px] font-mono-data text-slate-600">{mod.missing}</p>
+    </div>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* 01 - FLEET COMPOSITION (the three real charts retired from the old  */
+/*      Analytics page, kept because the data behind them is genuine)  */
+/* ------------------------------------------------------------------ */
+const CHART_COLORS = ['#22c55e', '#00d4ff', '#eab308', '#f97316', '#ef4444', '#8b5cf6', '#64748b'];
+
+export const FleetCompositionModule: React.FC<{ analytics: any }> = ({ analytics }) => {
+  const timeline = analytics?.timeline;
+  const os = analytics?.os_chart;
+  const country = analytics?.country_chart;
+
+  const activity = useMemo(
+    () => (timeline?.labels ?? []).map((l: string, i: number) => ({
+      name: l, activity: timeline.values?.[i] ?? 0,
+    })),
+    [timeline],
+  );
+  const osRows = useMemo(
+    () => (os?.labels ?? []).map((l: string, i: number) => ({
+      name: l, value: os.values?.[i] ?? 0,
+    })),
+    [os],
+  );
+  const countryRows = useMemo(
+    () => (country?.labels ?? []).map((l: string, i: number) => ({
+      name: l, value: country.values?.[i] ?? 0,
+    })),
+    [country],
+  );
+
+  if (!activity.length && !osRows.length && !countryRows.length) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-600/40 bg-slate-900/30 p-4">
+        <p className="text-[10px] font-mono-data text-slate-500">
+          No device inventory reported yet - composition appears once agents register.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="rounded-md border border-white/5 bg-slate-900/30 p-3">
+        <p className="text-[9px] font-orbitron uppercase tracking-[0.16em] text-slate-500 mb-2">
+          Activity - Last 24 Hours
+        </p>
+        <div className="h-[150px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={activity.length ? activity : [{ name: '--', activity: 0 }]}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+              <XAxis dataKey="name" stroke="#ffffff10" fontSize={8} axisLine={false} tickLine={false} />
+              <YAxis stroke="#ffffff10" fontSize={8} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={{ backgroundColor: '#0a0e1a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, fontSize: 10 }} />
+              <Line type="monotone" dataKey="activity" stroke="#22c55e" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="rounded-md border border-white/5 bg-slate-900/30 p-3">
+        <p className="text-[9px] font-orbitron uppercase tracking-[0.16em] text-slate-500 mb-2">
+          OS Distribution
+        </p>
+        <div className="h-[150px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={osRows.length ? osRows : [{ name: 'No Data', value: 0 }]}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+              <XAxis dataKey="name" stroke="#ffffff10" fontSize={8} axisLine={false} tickLine={false} />
+              <YAxis stroke="#ffffff10" fontSize={8} axisLine={false} tickLine={false} />
+              <Tooltip cursor={{ fill: '#ffffff05' }} contentStyle={{ backgroundColor: '#0a0e1a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, fontSize: 10 }} />
+              <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+                {osRows.map((_: any, i: number) => (
+                  <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="rounded-md border border-white/5 bg-slate-900/30 p-3">
+        <p className="text-[9px] font-orbitron uppercase tracking-[0.16em] text-slate-500 mb-2">
+          Devices by Country
+        </p>
+        <div className="h-[150px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie data={countryRows.length ? countryRows : [{ name: 'Unknown', value: 1 }]}
+                cx="50%" cy="50%" innerRadius={32} outerRadius={52} paddingAngle={3} dataKey="value">
+                {countryRows.map((_: any, i: number) => (
+                  <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip contentStyle={{ backgroundColor: '#0a0e1a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, fontSize: 10 }} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+        <p className="mt-1 text-[8px] font-mono-data text-slate-600">
+          Where monitored devices are located - not attack origins.
+        </p>
+      </div>
     </div>
   );
 };

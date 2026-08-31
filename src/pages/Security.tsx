@@ -11,8 +11,7 @@ import {
   Zap,
   RefreshCw,
   Search,
-  Clock,
-  ChevronDown
+  Clock
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import { useSocket } from '../context/SocketContext';
@@ -39,20 +38,6 @@ interface SecurityData {
   low_count: number;
 }
 
-interface NmapScan {
-  scan_id: string;
-  device_id: string;
-  hostname?: string;
-  scan_type: string;
-  target: string;
-  status: string;
-  result?: string;
-  error?: string;
-  queued_at?: string;
-  completed_at?: string;
-  parsed?: { open_ports?: Array<{ host?: string; port: number; protocol: string; state?: string; service?: string; product?: string; version?: string }> };
-}
-
 interface TimelineEvent {
   timestamp?: string;
   actor?: string;
@@ -71,18 +56,7 @@ const Security = () => {
   const [securityData, setSecurityData] = useState<SecurityData | null>(null);
   const { socket, isConnected } = useSocket();
   const { devices } = useDevices();
-  const [nmapDeviceId, setNmapDeviceId] = useState('');
-  const [nmapTarget, setNmapTarget] = useState('');
-  const [nmapScanType, setNmapScanType] = useState('top_ports');
-  const [nmapMessage, setNmapMessage] = useState('');
-  const [nmapScans, setNmapScans] = useState<NmapScan[]>([]);
-  const [expandedScan, setExpandedScan] = useState<string | null>(null);
 
-  // --- Network discovery (host sweep on the server's own network) ---
-  const [discTarget, setDiscTarget] = useState('');
-  const [discRunning, setDiscRunning] = useState(false);
-  const [discError, setDiscError] = useState('');
-  const [discResult, setDiscResult] = useState<{ scan_id: string; network: string; hosts: any[] } | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
 
   const fetchSecurity = useCallback(async () => {
@@ -91,15 +65,6 @@ const Security = () => {
       setSecurityData(data as SecurityData);
     } catch {
       // Silent
-    }
-  }, []);
-
-  const fetchNmapScans = useCallback(async () => {
-    try {
-      const data = await apiFetch<{ scans: NmapScan[] }>('/api/security/nmap/scans');
-      setNmapScans(data.scans || []);
-    } catch {
-      // Not authenticated or backend unavailable; keep current panel quiet.
     }
   }, []);
 
@@ -114,32 +79,26 @@ const Security = () => {
 
   useEffect(() => {
     fetchSecurity();
-    fetchNmapScans();
-    // While a scan is still queued the agent has not reported back yet; keep
-    // polling until it lands instead of waiting for the slow 10s cycle.
     fetchTimeline();
     const interval = setInterval(() => {
       fetchSecurity();
-      fetchNmapScans();
       fetchTimeline();
     }, 10000);
     return () => clearInterval(interval);
-  }, [fetchSecurity, fetchNmapScans, fetchTimeline]);
+  }, [fetchSecurity, fetchTimeline]);
 
   // Real-time refresh
   useEffect(() => {
     if (!socket) return;
     socket.on('devices_updated', fetchSecurity);
-    socket.on('nmap_scan_update', fetchNmapScans);
     socket.on('nmap_scan_update', fetchTimeline);
     socket.on('new_alert', fetchTimeline);
     return () => {
       socket.off('devices_updated', fetchSecurity);
-      socket.off('nmap_scan_update', fetchNmapScans);
       socket.off('nmap_scan_update', fetchTimeline);
       socket.off('new_alert', fetchTimeline);
     };
-  }, [socket, fetchSecurity, fetchNmapScans, fetchTimeline]);
+  }, [socket, fetchSecurity, fetchTimeline]);
 
   const startScan = () => {
     setIsScanning(true);
@@ -147,57 +106,6 @@ const Security = () => {
       fetchSecurity();
       setIsScanning(false);
     }, 3000);
-  };
-
-  /** Host sweep on the server's own network (LAN / Tailscale). */
-  const runDiscovery = async () => {
-    const target = discTarget.trim();
-    if (!target) return;
-    setDiscRunning(true);
-    setDiscError('');
-    try {
-      const res = await fetch(`${API_BASE}/api/discovery/network`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setDiscResult({ scan_id: data.scan_id, network: data.network, hosts: data.hosts || [] });
-      } else {
-        setDiscResult(null);
-        setDiscError(data.error || data.hint || `Discovery failed (${res.status})`);
-      }
-    } catch (e) {
-      setDiscResult(null);
-      setDiscError(e instanceof Error ? e.message : 'Discovery request failed');
-    } finally {
-      setDiscRunning(false);
-    }
-  };
-
-  const startNmapScan = async () => {
-    const deviceId = nmapDeviceId || devices[0]?.id || '';
-    if (!deviceId) {
-      setNmapMessage('Select a device first.');
-      return;
-    }
-    if (!nmapTarget.trim()) {
-      setNmapMessage('Enter a private/Tailscale target, for example 192.168.1.10 or 192.168.1.0/24.');
-      return;
-    }
-    setNmapMessage('Queuing authorized Nmap scan...');
-    try {
-      const data = await apiFetch<{ scan_id: string; status: string }>('/api/security/nmap/scan', {
-        method: 'POST',
-        body: JSON.stringify({ device_id: deviceId, target: nmapTarget.trim(), scan_type: nmapScanType }),
-      });
-      setNmapMessage(`Scan queued: ${data.scan_id.slice(0, 8)} (${data.status})`);
-      fetchNmapScans();
-    } catch (err) {
-      setNmapMessage(err instanceof Error ? err.message : 'Failed to queue Nmap scan');
-    }
   };
 
   // Build chart data from reported device alerts only. No simulated threat counts.
@@ -262,213 +170,6 @@ const Security = () => {
                <ShieldAlert className="text-red-500" />
             </div>
          </div>
-      </div>
-
-      {/* ---------- NETWORK DISCOVERY ---------- */}
-      <div className="glass-card p-6 border border-cyan-500/20">
-        <h3 className="text-lg font-orbitron text-white uppercase tracking-wider">Network Discovery</h3>
-        <p className="text-[11px] text-slate-500 mt-1 font-rajdhani">
-          Sweeps your own LAN / Tailscale range from the server and lists every host it finds,
-          including machines that have no agent installed yet. Private and Tailscale ranges only.
-        </p>
-
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <input
-            value={discTarget}
-            onChange={(e) => setDiscTarget(e.target.value)}
-            placeholder="192.168.1.0/24  or  100.64.0.0/10"
-            className="flex-1 min-w-[220px] bg-black/40 border border-cyan-500/20 rounded-xl px-3 py-2 text-[11px] font-mono-data text-cyan-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
-          />
-          <button
-            onClick={runDiscovery}
-            disabled={discRunning || !discTarget.trim()}
-            className="px-4 py-2 rounded-xl bg-cyan-600/20 border border-cyan-500/40 text-cyan-200 hover:bg-cyan-600 hover:text-white transition-all text-[10px] font-orbitron uppercase disabled:opacity-40"
-          >
-            {discRunning ? 'Scanning…' : 'Discover hosts'}
-          </button>
-          {discResult && (
-            <a
-              href={`${API_BASE}/api/discovery/scan/${discResult.scan_id}/download`}
-              className="px-4 py-2 rounded-xl border border-white/10 text-[10px] font-orbitron uppercase text-slate-400 hover:text-green-400 hover:border-green-500/40 transition-all"
-            >
-              Download .txt
-            </a>
-          )}
-        </div>
-
-        {discError && <p className="mt-3 text-[10px] font-mono-data text-red-400">{discError}</p>}
-
-        {discResult && (
-          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-            {discResult.hosts.length === 0 && (
-              <p className="text-[10px] font-mono-data text-slate-600">No hosts answered on {discResult.network}.</p>
-            )}
-            {discResult.hosts.map((h: any) => (
-              <div key={h.ip} className="p-3 rounded-xl bg-black/30 border border-white/5 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[11px] font-mono-data text-slate-200 truncate">{h.ip}</p>
-                  <p className="text-[10px] font-mono-data text-slate-500 truncate">
-                    {h.hostname || 'no hostname'} · {h.state}
-                  </p>
-                </div>
-                <span className={`text-[8px] font-orbitron uppercase shrink-0 ${
-                  h.agent_installed ? 'text-green-400' : 'text-amber-400'
-                }`}>
-                  {h.agent_installed ? 'agent installed' : 'no agent'}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="glass-card p-6 border border-green-500/10">
-        <div className="flex flex-col lg:flex-row lg:items-end gap-4 justify-between">
-          <div className="flex-1">
-            <h3 className="text-lg font-orbitron text-white uppercase tracking-wider">Authorized Nmap Scanner</h3>
-            <p className="text-[11px] text-slate-500 mt-1 font-rajdhani">
-              Scans are queued to a selected agent, limited to private/Tailscale targets, stored in the database, and audited.
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 flex-[2]">
-            <select
-              value={nmapDeviceId}
-              onChange={(e) => setNmapDeviceId(e.target.value)}
-              className="bg-black/40 border border-green-500/20 rounded-xl px-3 py-2 text-xs text-green-400 font-orbitron"
-            >
-              <option value="">SELECT AGENT</option>
-              {devices.map(d => <option key={d.id} value={d.id}>{d.hostname}</option>)}
-            </select>
-            <input
-              value={nmapTarget}
-              onChange={(e) => setNmapTarget(e.target.value)}
-              placeholder="192.168.1.10 or 192.168.1.0/24"
-              className="bg-black/40 border border-green-500/20 rounded-xl px-3 py-2 text-xs text-green-400 font-mono-data placeholder-green-900"
-            />
-            <select
-              value={nmapScanType}
-              onChange={(e) => setNmapScanType(e.target.value)}
-              className="bg-black/40 border border-green-500/20 rounded-xl px-3 py-2 text-xs text-green-400 font-orbitron"
-            >
-              <option value="ping">Ping discovery</option>
-              <option value="top_ports">Top ports</option>
-              <option value="service">Service/version</option>
-              <option value="os">OS guess</option>
-              <option value="udp_light">Light UDP</option>
-              <option value="vuln_safe">Safe vuln scripts</option>
-            </select>
-            <button
-              onClick={startNmapScan}
-              className="px-4 py-2 bg-green-600/10 border border-green-500/50 text-green-400 rounded-xl hover:bg-green-600 hover:text-white transition-all font-orbitron text-xs font-bold"
-            >
-              START NMAP
-            </button>
-          </div>
-        </div>
-        {nmapMessage && <p className="mt-3 text-[11px] font-mono-data text-green-400">{nmapMessage}</p>}
-        <div className="mt-5 space-y-2">
-          {nmapScans.slice(0, 8).map(scan => {
-            const ports = scan.parsed?.open_ports ?? [];
-            const isOpen = expandedScan === scan.scan_id;
-            const running = scan.status !== 'completed' && scan.status !== 'failed';
-            return (
-              <div key={scan.scan_id} className="rounded-xl bg-black/30 border border-white/5 overflow-hidden">
-                {/* row header — click to expand the full port table */}
-                <button
-                  onClick={() => setExpandedScan(isOpen ? null : scan.scan_id)}
-                  className="w-full p-3 flex items-center justify-between gap-3 text-left hover:bg-white/[0.03] transition-colors"
-                >
-                  <div className="min-w-0">
-                    <p className="text-xs font-orbitron text-white uppercase truncate">
-                      {scan.scan_type} → {scan.target}
-                    </p>
-                    <p className="text-[10px] text-slate-500 font-mono-data truncate">
-                      {scan.hostname || scan.device_id} · {scan.scan_id.slice(0, 8)}
-                      {scan.completed_at ? ` · ${scan.completed_at.slice(11, 19)}` : ''}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    {ports.length > 0 && (
-                      <span className="text-[10px] font-mono-data text-slate-400">{ports.length} open</span>
-                    )}
-                    <span className={`text-[10px] font-orbitron uppercase ${
-                      scan.status === 'completed' ? 'text-green-400'
-                        : scan.status === 'failed' ? 'text-red-400' : 'text-yellow-400'
-                    }`}>
-                      {running ? 'running…' : scan.status}
-                    </span>
-                    <ChevronDown size={14} className={`text-slate-600 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
-                  </div>
-                </button>
-
-                {scan.error && (
-                  <p className="px-3 pb-2 text-[10px] text-red-400 font-mono-data">{scan.error}</p>
-                )}
-
-                {/* collapsed summary */}
-                {!isOpen && ports.length > 0 && (
-                  <p className="px-3 pb-3 text-[10px] text-slate-500 font-mono-data truncate">
-                    {ports.slice(0, 6).map(pt => `${pt.port}/${pt.protocol}${pt.service ? ` ${pt.service}` : ''}`).join(', ')}
-                    {ports.length > 6 ? ` +${ports.length - 6} more` : ''}
-                  </p>
-                )}
-
-                {/* expanded: full port table + report download */}
-                {isOpen && (
-                  <div className="px-3 pb-3">
-                    {ports.length === 0 ? (
-                      <p className="text-[10px] text-slate-600 font-mono-data py-2">
-                        {running ? 'Waiting for the agent to report back…' : 'No open ports reported.'}
-                      </p>
-                    ) : (
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left">
-                          <thead>
-                            <tr className="text-[9px] font-orbitron text-slate-500 uppercase tracking-widest border-b border-white/5">
-                              <th className="py-1.5 pr-3">Port</th>
-                              <th className="py-1.5 pr-3">Proto</th>
-                              <th className="py-1.5 pr-3">State</th>
-                              <th className="py-1.5 pr-3">Service</th>
-                              <th className="py-1.5">Version</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {ports.map((pt, i) => (
-                              <tr key={i} className="border-b border-white/5 last:border-0">
-                                <td className="py-1.5 pr-3 text-[10px] font-mono-data text-green-400">{pt.port}</td>
-                                <td className="py-1.5 pr-3 text-[10px] font-mono-data text-slate-400">{pt.protocol}</td>
-                                <td className="py-1.5 pr-3 text-[10px] font-mono-data text-slate-400">{pt.state || 'open'}</td>
-                                <td className="py-1.5 pr-3 text-[10px] font-mono-data text-slate-300">{pt.service || '—'}</td>
-                                <td className="py-1.5 text-[10px] font-mono-data text-slate-500">
-                                  {[pt.product, pt.version].filter(Boolean).join(' ') || '—'}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                    <div className="mt-3 flex gap-2">
-                      <a
-                        href={`${API_BASE}/api/discovery/scan/${scan.scan_id}/download`}
-                        className="px-3 py-1.5 rounded-lg border border-green-500/30 text-[9px] font-orbitron uppercase text-green-400 hover:bg-green-600 hover:text-white transition-all"
-                      >
-                        Download report
-                      </a>
-                      <button
-                        onClick={fetchNmapScans}
-                        className="px-3 py-1.5 rounded-lg border border-white/10 text-[9px] font-orbitron uppercase text-slate-400 hover:text-white transition-all"
-                      >
-                        Refresh
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {nmapScans.length === 0 && <p className="text-xs text-slate-600 font-rajdhani">No Nmap scans recorded yet.</p>}
-        </div>
       </div>
 
       <div className="glass-card p-6 border border-cyan-500/10">

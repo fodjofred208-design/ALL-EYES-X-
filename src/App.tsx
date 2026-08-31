@@ -14,7 +14,6 @@ import { WelcomeProvider, useWelcome } from './context/WelcomeContext';
 import WelcomeExperience from './components/welcome/WelcomeExperience';
 import NotificationCenter from './components/NotificationCenter';
 
-import Analytics from './pages/Analytics';
 import Analysis from './pages/Analysis';
 import AlertCenter from './pages/AlertCenter';
 import ChartAnalysis from './pages/ChartAnalysis';
@@ -210,7 +209,6 @@ const AppContent: React.FC = () => {
               </WelcomeGate>
           }
         />
-              <Route path="/analytics" element={<Panel><Analytics /></Panel>} />
               <Route path="/analysis" element={<Panel morph={MORPH_SLOW}><Analysis /></Panel>} />
               <Route path="/alerts" element={<Panel morph={MORPH_SLOW}><Scoped><AlertCenter /></Scoped></Panel>} />
               <Route path="/chart-analysis" element={<Panel morph={MORPH_SLOW}><Scoped><ChartAnalysis /></Scoped></Panel>} />
