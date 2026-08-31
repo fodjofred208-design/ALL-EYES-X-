@@ -35,6 +35,7 @@ import urllib.error
 import ssl
 import re
 import io
+import tempfile
 import contextlib
 import importlib.util
 import datetime
@@ -85,6 +86,62 @@ def platform_kind():
     return sysname or 'unknown'
 
 
+def is_termux():
+    """True when running inside Termux on Android."""
+    return platform_kind() == 'android'
+
+
+def termux_tool(name):
+    """Path to a Termux:API tool, or None when it is not installed.
+
+    Termux:API is a separate package (`pkg install termux-api`) plus the Termux:API
+    Android app. Nothing here assumes it is present - every caller degrades to
+    "not reported" instead of guessing.
+    """
+    if not is_termux():
+        return None
+    return shutil.which(name)
+
+
+def termux_json(name, timeout=10):
+    """Run a Termux:API tool that prints JSON and parse it. None on any failure."""
+    tool = termux_tool(name)
+    if not tool:
+        return None
+    try:
+        out = subprocess.check_output([tool], timeout=timeout, stderr=subprocess.DEVNULL)
+        return json.loads(out.decode('utf-8', errors='ignore'))
+    except Exception:
+        return None
+
+
+def termux_run(args, timeout=15):
+    """Run a Termux:API tool with arguments. Returns stdout or None."""
+    try:
+        return subprocess.check_output(args, timeout=timeout, stderr=subprocess.DEVNULL).decode('utf-8', errors='ignore')
+    except Exception:
+        return None
+
+
+def android_model():
+    """Best available phone identity: Termux telephony info, else the build props."""
+    info = termux_json('termux-telephony-deviceinfo') or {}
+    if isinstance(info, dict):
+        for key in ('device_model', 'device_product', 'device_id'):
+            if info.get(key):
+                return str(info[key])
+    for path, key in (('/system/build.prop', 'ro.product.model'),
+                      ('/system/build.prop', 'ro.product.device')):
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if line.startswith(key + '='):
+                        return line.split('=', 1)[1].strip()
+        except Exception:
+            continue
+    return None
+
+
 def capability_profile():
     """Declare what this agent can attempt on the current OS.
 
@@ -109,9 +166,14 @@ def capability_profile():
 
     # Screenshots use mss+numpy for dirty rectangles, or PIL.ImageGrab as a
     # whole-frame fallback, so PIL alone is enough to produce something.
-    can_screenshot = have('PIL') and (
-        (have('mss', 'numpy')) or kind in ('windows', 'macos')
-    )
+    # On Android there is no display server a Python process can grab, so the
+    # only route is the Termux:API screenshot tool.
+    if kind == 'android':
+        can_screenshot = termux_tool('termux-screenshot') is not None
+    else:
+        can_screenshot = have('PIL') and (
+            (have('mss', 'numpy')) or kind in ('windows', 'macos')
+        )
     can_webcam = have('cv2')
     can_input = have('pyautogui')
     can_telemetry = have('psutil')
@@ -120,7 +182,10 @@ def capability_profile():
     if not can_telemetry:
         missing.append('psutil (CPU/process telemetry)')
     if not can_screenshot:
-        missing.append('mss pillow numpy (screenshots)')
+        if kind == 'android':
+            missing.append('termux-api package + Termux:API app (screenshots)')
+        else:
+            missing.append('mss pillow numpy (screenshots)')
     if not can_webcam:
         missing.append('opencv-python (webcam)')
     if not can_input:
@@ -135,10 +200,11 @@ def capability_profile():
         'platform': kind,
         'telemetry': can_telemetry,
         'hardware_inventory': kind in ('windows', 'linux', 'macos', 'android'),
-        'screenshot': can_screenshot and kind in ('windows', 'linux', 'macos'),
+        'screenshot': can_screenshot and kind in ('windows', 'linux', 'macos', 'android'),
         'webcam': can_webcam and kind in ('windows', 'linux', 'macos', 'android'),
         'remote_input': can_input and kind in ('windows', 'linux', 'macos'),
-        'persistence': kind in ('windows', 'linux', 'macos'),
+        'persistence': (kind in ('windows', 'linux', 'macos'))
+        or (kind == 'android' and os.path.isdir(os.path.expanduser('~/.termux/boot'))),
         'nmap': kind in ('windows', 'linux', 'macos', 'android'),
         'missing': missing,
         'limited_reason': limited,
@@ -365,6 +431,25 @@ def get_os_name():
     Windows, the Linux distributions, macOS/Darwin, Solaris/illumos, the BSDs
     and IBM AIX.
     """
+    # Android reports as Linux to platform.system(), so without this the OS
+    # column showed a kernel string like "Linux 6.1.158+" for every phone.
+    if is_termux():
+        release = None
+        sdk = None
+        try:
+            with open('/system/build.prop', 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if line.startswith('ro.build.version.release='):
+                        release = line.split('=', 1)[1].strip()
+                    elif line.startswith('ro.build.version.sdk='):
+                        sdk = line.split('=', 1)[1].strip()
+        except Exception:
+            pass
+        if release:
+            return 'Android ' + release + ((' (API ' + sdk + ')') if sdk else '')
+        model = android_model()
+        return 'Android' + ((' - ' + model) if model else '')
+
     kind = platform_kind()
 
     if kind == 'windows':
@@ -586,7 +671,11 @@ def get_system_info():
     caps = capability_profile()
     info = {
         'device_id': DEVICE_ID,
-        'hostname': platform.node() or socket.gethostname() or 'Unknown',
+        # platform.node() inside Termux returns something like "localhost", which
+        # is useless for telling two phones apart in the dashboard. Prefer the
+        # actual device model when Termux:API or the build props can supply it.
+        'hostname': (android_model() if is_termux() else None)
+                    or platform.node() or socket.gethostname() or 'Unknown',
         'ip': get_local_ip(),
         # A real OS identity, not the platform kind. caps['platform'] stays
         # available under 'platform' for anything that relied on it.
@@ -1828,6 +1917,19 @@ def check_disk_encryption():
 
 def get_wifi_info():
     try:
+        # Termux first: on Android sys.platform is 'linux', so without this the
+        # nmcli path below would run and always fail.
+        if is_termux():
+            info = termux_json('termux-wifi-connectioninfo')
+            if isinstance(info, dict) and info.get('ssid'):
+                link = info.get('link_speed_mbps')
+                return {
+                    'ssid': str(info['ssid']),
+                    'signal': (f"{int(info['rssi'])} dBm" if info.get('rssi') is not None else ''),
+                    'frequency': (f"{info.get('frequency_mhz')} MHz" if info.get('frequency_mhz') else ''),
+                    'link_speed': (f"{link} Mbps" if link else ''),
+                }
+            return None
         if sys.platform == 'win32':
             out = subprocess.check_output('netsh wlan show interfaces', shell=True, timeout=10).decode(errors='ignore')
             ssid = ''
@@ -1856,6 +1958,20 @@ def get_wifi_info():
     return None
 
 def get_battery_info():
+    # Termux:API reports real battery state, including health and temperature,
+    # which the generic Linux sysfs path cannot reach on Android.
+    if is_termux():
+        bat = termux_json('termux-battery-status')
+        if isinstance(bat, dict) and bat.get('percentage') is not None:
+            status = str(bat.get('status') or '').lower()
+            return {
+                'percent': int(bat['percentage']),
+                'plugged': bool(bat.get('plugged') and str(bat['plugged']).lower() != 'unplugged'),
+                'health': bat.get('health'),
+                'temperature': bat.get('temperature'),
+                'status': bat.get('status'),
+            }
+        return None
     try:
         import psutil
         if hasattr(psutil, 'sensors_battery'):
@@ -2144,6 +2260,41 @@ def capture_screenshot():
     global _prev_frame_array, _frame_width, _frame_height, _last_full_send
     if not capability_profile().get('screenshot'):
         return None
+
+    # Android has no display server a Python process can grab, so the only route
+    # is the Termux:API tool. Whole frames only - dirty-rectangle diffing needs a
+    # framebuffer we do not have.
+    if is_termux():
+        tool = termux_tool('termux-screenshot')
+        if not tool:
+            return None
+        tmp = os.path.join(tempfile.gettempdir(), 'aeyes_shot.png')
+        try:
+            subprocess.check_output([tool, '-o', tmp], timeout=20, stderr=subprocess.DEVNULL)
+            with open(tmp, 'rb') as f:
+                payload = f.read()
+            if not payload:
+                return None
+            from PIL import Image
+            import io as _io
+            img = Image.open(_io.BytesIO(payload)).convert('RGB')
+            w, h = img.size
+            if w > 1280:
+                scale = 1280 / w
+                img = img.resize((1280, int(h * scale)))
+                w, h = img.size
+            buf = _io.BytesIO()
+            img.save(buf, format='JPEG', quality=SCREENSHOT_QUALITY, optimize=True)
+            _last_full_send = time.time()
+            return {
+                'full_frame': True,
+                'image': base64.b64encode(buf.getvalue()).decode(),
+                'x': 0, 'y': 0, 'width': w, 'height': h,
+                'screen_width': w, 'screen_height': h,
+            }
+        except Exception as exc:
+            _report_screenshot_error('termux-screenshot', exc)
+            return None
     
     try:
         import mss
@@ -2859,6 +3010,16 @@ class ALLEYESXClient:
                     ),
                     daemon=True,
                 ).start()
+                return
+            if kind == 'android':
+                tool = termux_tool('termux-notification')
+                if tool:
+                    # The person holding the phone is told an administrator sent a
+                    # message - the session is never silent.
+                    termux_run([tool, '--title', 'ALL EYES X', '--content', message,
+                                '--priority', 'high', '--id', 'aeyes-notice'])
+                else:
+                    print('[!] termux-api not installed - cannot show the notice on this phone')
                 return
             if kind in ('linux', 'macos'):
                 for cmd in (['notify-send', 'ALL EYES X', message],

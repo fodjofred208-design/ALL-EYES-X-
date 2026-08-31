@@ -146,3 +146,43 @@ describe('ResizableBox', () => {
     expect(committed).toEqual({ w: 410, h: 271 });
   });
 });
+
+describe('ResizableBox keeps its size after a drag', () => {
+  it('does not collapse when the drag ends at the same size', () => {
+    // React skips a style write when the prop value is unchanged. onUp used to
+    // clear the inline style and rely on React to re-apply it - so a drag that
+    // ended where it started (or was clamped back to the same size) left the
+    // element with no width/height and the box appeared to vanish.
+    const { container } = render(<Harness initial={{ w: 400, h: 250 }} />);
+    const box = container.firstElementChild as HTMLElement;
+
+    dragHandle(container, 'se', 0, 0);
+
+    expect(box.style.width).toBe('400px');
+    expect(box.style.height).toBe('250px');
+  });
+
+  it('does not collapse when the drag is clamped back to the minimum', () => {
+    const { container } = render(
+      <Harness initial={{ w: 300, h: 200 }} min={{ w: 300, h: 200 }} />,
+    );
+    const box = container.firstElementChild as HTMLElement;
+
+    dragHandle(container, 'se', -500, -500);
+
+    expect(box.style.width).toBe('300px');
+    expect(box.style.height).toBe('200px');
+  });
+
+  it('does not collapse on reset-to-default when already at default', () => {
+    const { container } = render(
+      <Harness initial={{ w: 380, h: 209 }} defaultSize={{ w: 380, h: 209 }} />,
+    );
+    const box = container.firstElementChild as HTMLElement;
+
+    fireEvent.doubleClick(handleOf(container, 'se'));
+
+    expect(box.style.width).toBe('380px');
+    expect(box.style.height).toBe('209px');
+  });
+});

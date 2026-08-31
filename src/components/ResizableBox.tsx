@@ -130,14 +130,30 @@ const ResizableBox: React.FC<ResizableBoxProps> = ({
    * is used by reset: writing the default back to storage would pin a stale
    * size that stops the tile re-flowing when the window is later resized.
    */
-  const commit = useCallback((next: BoxSize, persist = true) => {
+  const commit = useCallback((next: BoxSize, persist = true): BoxSize => {
     const clamped = {
       w: Math.round(clamp(next.w, limits.current.min.w, limits.current.max.w)),
       h: Math.round(clamp(next.h, limits.current.min.h, limits.current.max.h)),
     };
     onResize(clamped);
     if (persist) saveBoxSize(storageKey, clamped);
+    return clamped;
   }, [onResize, storageKey]);
+
+  /**
+   * Write the committed size straight to the element.
+   *
+   * This must NOT just clear the inline style and trust React: React skips a
+   * style write when the incoming prop value is unchanged, so whenever a drag
+   * ended at the size it started from - or was clamped back to it - the cleared
+   * style survived and the box collapsed to nothing. The tile looked like it had
+   * resized correctly and then vanished.
+   */
+  const applySize = (size: BoxSize) => {
+    if (!boxRef.current) return;
+    boxRef.current.style.width = `${size.w}px`;
+    boxRef.current.style.height = `${size.h}px`;
+  };
 
   useEffect(() => {
     if (!dragging) return;
@@ -184,9 +200,7 @@ const ResizableBox: React.FC<ResizableBoxProps> = ({
       const final = pending ?? sizeRef.current;
       setDragging(null);
       dragState.current = null;
-      // Clear the inline style so React owns the size again.
-      if (boxRef.current) { boxRef.current.style.width = ''; boxRef.current.style.height = ''; }
-      commit(final);
+      applySize(commit(final));
     };
 
     window.addEventListener('pointermove', onMove, { passive: false });
@@ -212,8 +226,7 @@ const ResizableBox: React.FC<ResizableBoxProps> = ({
     e.preventDefault();
     e.stopPropagation();
     clearBoxSize(storageKey);
-    if (boxRef.current) { boxRef.current.style.width = ''; boxRef.current.style.height = ''; }
-    commit(defaultRef.current, false);
+    applySize(commit(defaultRef.current, false));
   };
 
   const shown = dragging !== null || hover;
