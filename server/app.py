@@ -1695,8 +1695,19 @@ def get_device_list_for_dashboard():
     device_ids = list(connected_devices.keys())
     alerts_by_device = get_alerts_grouped(device_ids)
     inventory_by_device = get_inventory_completeness(device_ids)
+    # Risk on the PRIMARY list. The dashboard also has a database fallback that
+    # only runs when this helper returns nothing, so scoring there alone left
+    # the Command Center's risk table reading 0/LOW for every device.
+    telemetry_by_device = _telemetry_rows_for(device_ids)
     for dev_id, dev in connected_devices.items():
+        _risk = compute_device_risk(
+            dev_id, dev, telemetry_by_device.get(dev_id), alerts_by_device.get(dev_id, [])
+        )
         devices_list.append({
+            'risk': _risk['risk_score'],
+            'risk_score': _risk['risk_score'],
+            'risk_level': _risk['risk_level'],
+            'risk_reasons': _risk['reasons'],
             'id': dev_id,
             'hostname': dev.get('hostname', 'Unknown'),
             'ip': dev.get('ip', '0.0.0.0'),
@@ -1832,7 +1843,18 @@ def api_dashboard():
 
             devices_list = []
 
+            # Real risk from the shared engine. These fields were hardcoded to
+            # None, so the Command Center's Device Risk table rendered 0/LOW for
+            # every device on the system.
+            _tel_by_dev, _alerts_by_dev = _risk_inputs()
+
             for d in db_devices:
+
+                _risk = compute_device_risk(
+                    d.get('id'), d,
+                    _tel_by_dev.get(d.get('id')),
+                    _alerts_by_dev.get(d.get('id'), []),
+                )
 
                 # ----------------------------------------------------
                 # Normalize status
@@ -1892,8 +1914,10 @@ def api_dashboard():
                     'sessions': d.get('sessions') or 0,
                     'data_usage': d.get('data_usage'),
 
-                    'risk': None,
-                    'risk_score': None,
+                    'risk': _risk['risk_score'],
+                    'risk_score': _risk['risk_score'],
+                    'risk_level': _risk['risk_level'],
+                    'risk_reasons': _risk['reasons'],
                 })
 
         total = len(devices_list)
@@ -4371,34 +4395,213 @@ def api_device_hardware_update(device_id):
 # ============================================================
 # API: SECURITY ASSESSMENT
 # ============================================================
+# ============================================================
+# DEVICE RISK ENGINE
+#
+# One engine, two framings: Analysis shows RISK (0-100, higher is worse) and the
+# Security page shows a health score (100 - risk). Previously the assessment
+# endpoint started every device at 100 and subtracted 10 if it was offline, so
+# every online device scored "100 / low" regardless of its exposed ports, open
+# alerts, firewall state or malware indicators - all of which are already in the
+# database. The dashboard's risk_ranking column was hardcoded to None on top of
+# that, so the Command Center showed 0/LOW for every device.
+#
+# Every point added here names its evidence, so the UI can explain WHY a device
+# scored what it did. No reason is emitted without data behind it.
+# ============================================================
+
+# Ports whose exposure is worth an analyst's attention on an endpoint.
+HIGH_RISK_PORTS = {
+    21: 'FTP', 23: 'Telnet', 25: 'SMTP', 135: 'MSRPC', 139: 'NetBIOS',
+    445: 'SMB', 1433: 'MSSQL', 3306: 'MySQL', 3389: 'RDP', 5432: 'PostgreSQL',
+    5900: 'VNC', 5985: 'WinRM', 5986: 'WinRM-TLS', 11211: 'Memcached',
+    27017: 'MongoDB', 6379: 'Redis', 9200: 'Elasticsearch',
+}
+
+# Weight per unresolved alert severity.
+ALERT_SEVERITY_WEIGHT = {'critical': 12, 'high': 7, 'medium': 3, 'low': 1, 'info': 0}
+
+
+def _risk_level(score):
+    if score >= 70:
+        return 'CRITICAL'
+    if score >= 45:
+        return 'HIGH'
+    if score >= 20:
+        return 'MEDIUM'
+    return 'LOW'
+
+
+def compute_device_risk(device_id, dev, telemetry_row, alert_rows):
+    """Return {'risk_score', 'risk_level', 'reasons': [{'label','weight','evidence'}]}.
+
+    `reasons` only ever contains factors that were actually observed. A device
+    with nothing wrong returns an empty list rather than invented findings.
+    """
+    tel = dict(telemetry_row) if telemetry_row else {}
+    score = 0
+    reasons = []
+
+    def add(weight, label, evidence):
+        nonlocal score
+        score += weight
+        reasons.append({'label': label, 'weight': weight, 'evidence': evidence})
+
+    # --- 1. Unresolved alerts, weighted by severity ---
+    open_alerts = [a for a in (alert_rows or [])
+                   if str(a.get('status') or 'open').lower() in ('open', 'active', 'new')]
+    by_sev = {}
+    for a in open_alerts:
+        sev = str(a.get('severity') or a.get('type') or 'low').lower()
+        if sev in ('info', 'notice'):
+            sev = 'low'
+        by_sev[sev] = by_sev.get(sev, 0) + 1
+    for sev, count in by_sev.items():
+        weight = ALERT_SEVERITY_WEIGHT.get(sev, 1) * count
+        if weight:
+            add(min(weight, 30), f'{count} unresolved {sev} alert(s)',
+                f'{count} x {sev}')
+
+    # --- 2. Exposed listening ports ---
+    ports = _parse_json_list(tel.get('open_ports'))
+    ints = []
+    for port in ports:
+        try:
+            ints.append(int(port))
+        except (TypeError, ValueError):
+            continue
+    risky = sorted({p for p in ints if p in HIGH_RISK_PORTS})
+    if risky:
+        names = ', '.join(f'{p}/{HIGH_RISK_PORTS[p]}' for p in risky[:8])
+        add(min(len(risky) * 6, 30), f'{len(risky)} high-risk listening port(s)', names)
+    if len(ints) > 12:
+        add(6, f'{len(ints)} listening ports in total', f'{len(ints)} open')
+
+    # --- 3. Security controls ---
+    fw = tel.get('firewall')
+    if fw == 0:
+        add(15, 'Host firewall disabled', 'telemetry.firewall = 0')
+    av = tel.get('antivirus')
+    if av == 0:
+        add(15, 'Antivirus inactive', 'telemetry.antivirus = 0')
+    if tel.get('malware_detected'):
+        add(35, 'Malware indicator reported by the agent', 'telemetry.malware_detected = 1')
+
+    susp = _parse_json_list(tel.get('suspicious_processes'))
+    if susp:
+        names = ', '.join(
+            (x.get('name') if isinstance(x, dict) else str(x)) for x in susp[:6]
+        )
+        add(min(len(susp) * 8, 25), f'{len(susp)} suspicious process(es)', names)
+
+    cves = _parse_json_list(tel.get('critical_cves'))
+    if cves:
+        add(min(len(cves) * 5, 20), f'{len(cves)} critical CVE(s) reported',
+            f'{len(cves)} reported by the agent')
+
+    if tel.get('encrypted_disk') == 0:
+        add(5, 'Disk encryption not detected', 'telemetry.encrypted_disk = 0')
+
+    # --- 4. Staleness: an agent that stopped reporting cannot be assessed ---
+    if str(dev.get('status', '')).lower() != 'online':
+        add(10, 'Agent offline', f"last seen {dev.get('last_seen') or 'unknown'}")
+
+    score = max(0, min(100, score))
+    return {
+        'risk_score': score,
+        'risk_level': _risk_level(score),
+        'reasons': sorted(reasons, key=lambda r: -r['weight']),
+    }
+
+
+def _telemetry_rows_for(ids):
+    """One query for the whole fleet's telemetry rows, keyed by device id."""
+    out = {}
+    ids = [i for i in (ids or []) if i]
+    if not ids:
+        return out
+    conn = get_db()
+    try:
+        placeholders = ','.join('?' for _ in ids)
+        for row in conn.execute(
+            f"SELECT * FROM telemetry WHERE device_id IN ({placeholders})", ids
+        ).fetchall():
+            out[row['device_id']] = row
+    except sqlite3.OperationalError:
+        pass  # table absent on an older database
+    finally:
+        conn.close()
+    return out
+
+
+def _risk_inputs():
+    """Fetch telemetry and alerts for every device in one pass each."""
+    ids = list(connected_devices.keys())
+    return _telemetry_rows_for(ids), get_alerts_grouped(ids)
+
+
+@app.route('/api/analysis/devices', methods=['GET'])
+@login_required
+def api_analysis_devices():
+    """Per-device risk ranking with the evidence behind every score."""
+    telemetry_by_device, alerts_by_device = _risk_inputs()
+    only = (request.args.get('device_id') or '').strip() or None
+
+    rows = []
+    for dev_id, dev in connected_devices.items():
+        if only and dev_id != only:
+            continue
+        risk = compute_device_risk(
+            dev_id, dev, telemetry_by_device.get(dev_id), alerts_by_device.get(dev_id, [])
+        )
+        rows.append({
+            'device_id': dev_id,
+            'hostname': dev.get('hostname', 'Unknown'),
+            'ip': dev.get('ip', '0.0.0.0'),
+            'os_name': dev.get('os_name') or dev.get('os') or 'Unknown',
+            'status': dev.get('status', 'offline'),
+            'last_seen': dev.get('last_seen', ''),
+            'is_vm': bool(dev.get('is_vm')),
+            'hypervisor': dev.get('hypervisor', ''),
+            'alert_count': len(alerts_by_device.get(dev_id, [])),
+            **risk,
+        })
+
+    rows.sort(key=lambda r: -r['risk_score'])
+    counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
+    for r in rows:
+        counts[r['risk_level']] += 1
+
+    return jsonify({
+        'devices': rows,
+        'counts': counts,
+        'total': len(rows),
+        'source': 'derived from alerts, telemetry and agent reports',
+    }), 200
+
+
 @app.route('/api/security/assessment', methods=['GET'])
 @login_required
 def api_security_assessment():
+    # Driven by the shared risk engine. `score` stays a HEALTH score (100 = no
+    # risk) so the existing Security page keeps its meaning, but it is now
+    # 100 - risk instead of a flat 100 with -10 for offline.
+    telemetry_by_device, alerts_by_device = _risk_inputs()
     devices_list = []
     for dev_id, dev in connected_devices.items():
-        score = 100
-        alerts_list = []
-        
-        if dev.get('status') != 'online':
-            score -= 10
-            alerts_list.append('Device offline')
-        
-        threat = 'low'
-        if score < 40:
-            threat = 'critical'
-        elif score < 60:
-            threat = 'high'
-        elif score < 80:
-            threat = 'medium'
-        
+        risk = compute_device_risk(
+            dev_id, dev, telemetry_by_device.get(dev_id), alerts_by_device.get(dev_id, [])
+        )
         devices_list.append({
             'device_id': dev_id,
             'hostname': dev.get('hostname', 'Unknown'),
             'ip_address': dev.get('ip', '0.0.0.0'),
-            'score': max(0, score),
-            'threat_level': threat,
-            'alerts': alerts_list,
-            'alert_count': len(alerts_list),
+            'score': max(0, 100 - risk['risk_score']),
+            'risk_score': risk['risk_score'],
+            'threat_level': risk['risk_level'].lower(),
+            'alerts': [r['label'] for r in risk['reasons']],
+            'reasons': risk['reasons'],
+            'alert_count': len(alerts_by_device.get(dev_id, [])),
         })
     
     overall = round(sum(d['score'] for d in devices_list) / max(len(devices_list), 1), 1)

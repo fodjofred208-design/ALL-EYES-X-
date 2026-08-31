@@ -24,8 +24,21 @@ const DeviceRiskTable: React.FC = () => {
             </tr>
           </thead>
           <tbody>
-            {ranking.map((r: any) => (
-              <tr key={r.device_id} onClick={() => navigate(`/device/${r.device_id}`)}
+            {ranking.map((r: any) => {
+              // The dashboard sends `id` / `risk_level`; the analysis endpoint
+              // sends `device_id`. Accept either - reading only `device_id` made
+              // every row key undefined and the click navigate to
+              // /device/undefined.
+              const id = r.device_id ?? r.id;
+              const level = r.risk_level ?? r.level ?? 'LOW';
+              const color = LEVEL_COLORS[level] ?? '#64748b';
+              const reasons = Array.isArray(r.risk_reasons) ? r.risk_reasons : [];
+              const why = reasons.length
+                ? reasons.map((x: any) => `+${x.weight}  ${x.label}\n      ${x.evidence}`).join('\n')
+                : 'No risk factors observed';
+              return (
+              <tr key={id} onClick={() => navigate(`/device/${id}`)}
+                title={`Risk ${r.risk ?? 0} - ${level}\n\n${why}`}
                 className="border-b border-white/5 cursor-pointer hover:bg-white/5 transition-colors">
                 <td className="py-2 pr-2 text-[11px] font-rajdhani text-slate-200">{r.hostname}</td>
                 <td className="py-2 pr-2 text-[10px] font-mono-data text-slate-400">{r.os}</td>
@@ -37,19 +50,20 @@ const DeviceRiskTable: React.FC = () => {
                 <td className="py-2 pr-2">
                   <div className="flex items-center gap-2">
                     <div className="w-16 h-1 bg-white/5 rounded-full overflow-hidden">
-                      <div className="h-full transition-all duration-700" style={{ width: `${r.risk}%`, backgroundColor: LEVEL_COLORS[r.level] ?? '#64748b' }} />
+                      <div className="h-full transition-all duration-700" style={{ width: `${r.risk}%`, backgroundColor: color }} />
                     </div>
                     <span className="text-[10px] font-mono-data text-slate-300">{r.risk}</span>
                   </div>
                 </td>
                 <td className="py-2">
                   <span className="px-2 py-0.5 rounded text-[9px] font-orbitron"
-                    style={{ backgroundColor: `${LEVEL_COLORS[r.level] ?? '#64748b'}22`, color: LEVEL_COLORS[r.level] ?? '#94a3b8' }}>
-                    {r.level}
+                    style={{ backgroundColor: `${color}22`, color }}>
+                    {level}
                   </span>
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {ranking.length === 0 && (
               <tr><td colSpan={5} className="py-6 text-center text-[10px] text-slate-600 font-mono-data">No devices registered</td></tr>
             )}
