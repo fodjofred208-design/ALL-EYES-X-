@@ -4580,6 +4580,155 @@ def api_analysis_devices():
     }), 200
 
 
+@app.route('/api/analysis/endpoints', methods=['GET'])
+@login_required
+def api_analysis_endpoints():
+    """Per-device exposure and endpoint-security view, in one pass.
+
+    Exists so the Analysis page does not have to call /api/device/<id>/detail
+    once per device. Every value is what the agent actually reported; absent
+    fields are omitted rather than defaulted, so the UI can say "not reported"
+    instead of showing a misleading zero.
+    """
+    ids = list(connected_devices.keys())
+    tel = _telemetry_rows_for(ids)
+    only = (request.args.get('device_id') or '').strip() or None
+
+    rows = []
+    for dev_id, dev in connected_devices.items():
+        if only and dev_id != only:
+            continue
+        t = dict(tel.get(dev_id) or {})
+        ports = _parse_json_list(t.get('open_ports'))
+        ints = sorted({int(x) for x in ports if str(x).lstrip('-').isdigit()})
+        risky = [p_ for p_ in ints if p_ in HIGH_RISK_PORTS]
+        rows.append({
+            'device_id': dev_id,
+            'hostname': dev.get('hostname', 'Unknown'),
+            'ip': dev.get('ip', '0.0.0.0'),
+            'status': dev.get('status', 'offline'),
+            'reported_at': t.get('updated_at'),
+            'open_ports': ints,
+            'high_risk_ports': [
+                {'port': p_, 'service': HIGH_RISK_PORTS[p_]} for p_ in risky
+            ],
+            'usb_devices': _parse_json_list(t.get('usb_devices')),
+            'suspicious_processes': _parse_json_list(t.get('suspicious_processes')),
+            'malware_detected': bool(t.get('malware_detected')),
+            # -1 means the agent never reported it; that is not the same as off.
+            'firewall': t.get('firewall', -1),
+            'antivirus': t.get('antivirus', -1),
+            'encrypted_disk': t.get('encrypted_disk', -1),
+            'has_telemetry': bool(t),
+        })
+
+    return jsonify({
+        'devices': rows,
+        'total_ports': sum(len(r['open_ports']) for r in rows),
+        'total_high_risk': sum(len(r['high_risk_ports']) for r in rows),
+        'devices_with_telemetry': sum(1 for r in rows if r['has_telemetry']),
+        'total': len(rows),
+    }), 200
+
+
+@app.route('/api/analysis/talkers', methods=['GET'])
+@login_required
+def api_analysis_talkers():
+    """Top network talkers from real per-device traffic samples.
+
+    traffic_samples stores one (download, upload) counter pair per device per
+    heartbeat, so totals and the sample window are real. There is no
+    per-connection data, so connection counts and per-device protocol breakdowns
+    are deliberately not returned - the UI says so instead of inventing them.
+    """
+    conn = get_db()
+    try:
+        rows = [dict(r) for r in conn.execute("""
+            SELECT device_id,
+                   COUNT(*)                        AS samples,
+                   SUM(COALESCE(download, 0))      AS total_down,
+                   SUM(COALESCE(upload, 0))        AS total_up,
+                   MIN(ts)                         AS first_ts,
+                   MAX(ts)                         AS last_ts
+            FROM traffic_samples
+            GROUP BY device_id
+            ORDER BY (SUM(COALESCE(download, 0)) + SUM(COALESCE(upload, 0))) DESC
+            LIMIT 25
+        """).fetchall()]
+    except sqlite3.OperationalError:
+        rows = []
+    finally:
+        conn.close()
+
+    hosts = {d.get('id'): d.get('hostname', 'Unknown') for d in connected_devices.values()}
+    talkers = []
+    for r in rows:
+        down = float(r.get('total_down') or 0)
+        up = float(r.get('total_up') or 0)
+        talkers.append({
+            'device_id': r['device_id'],
+            'hostname': hosts.get(r['device_id'], r['device_id']),
+            'download_bytes': down,
+            'upload_bytes': up,
+            'total_bytes': down + up,
+            'samples': r.get('samples') or 0,
+            'first_ts': r.get('first_ts'),
+            'last_ts': r.get('last_ts'),
+        })
+
+    return jsonify({
+        'talkers': talkers,
+        'total': len(talkers),
+        'has_data': bool(talkers),
+        'note': 'Connection counts and per-device protocol breakdowns require flow-level telemetry, which is not collected.',
+    }), 200
+
+
+@app.route('/api/analysis/sessions', methods=['GET'])
+@login_required
+def api_analysis_sessions():
+    """Session monitoring, keeping the two real sources clearly separated.
+
+    remote_sessions are ADMINISTRATOR remote-control takeovers performed through
+    ALL EYES X. auth_attempts are logins to THIS dashboard. Neither is an
+    operating-system user logon - the agent does not collect those - so they are
+    returned under distinct keys and the UI labels them as such rather than
+    presenting them as endpoint logons.
+    """
+    conn = get_db()
+    try:
+        remote = [dict(r) for r in conn.execute(
+            "SELECT session_id, device_id, started_by, started_at, ended_at, mode, note "
+            "FROM remote_sessions ORDER BY started_at DESC LIMIT 100"
+        ).fetchall()]
+    except sqlite3.OperationalError:
+        remote = []
+    try:
+        auth = [dict(r) for r in conn.execute(
+            "SELECT username, success, ip, remote, source, timestamp "
+            "FROM auth_attempts ORDER BY timestamp DESC LIMIT 100"
+        ).fetchall()]
+    except sqlite3.OperationalError:
+        auth = []
+    finally:
+        conn.close()
+
+    hosts = {d.get('id'): d.get('hostname', 'Unknown') for d in connected_devices.values()}
+    for r in remote:
+        r['hostname'] = hosts.get(r.get('device_id'), r.get('device_id', ''))
+
+    return jsonify({
+        'remote_control_sessions': remote,
+        'dashboard_auth_attempts': auth,
+        'active_remote': sum(1 for r in remote if not r.get('ended_at')),
+        'failed_logins': sum(1 for a in auth if not a.get('success')),
+        'note': (
+            'These are administrator remote-control sessions and dashboard logins. '
+            'Operating-system user logons are not collected by the agent.'
+        ),
+    }), 200
+
+
 @app.route('/api/security/assessment', methods=['GET'])
 @login_required
 def api_security_assessment():

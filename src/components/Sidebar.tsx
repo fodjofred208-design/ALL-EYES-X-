@@ -11,7 +11,7 @@ import { API_BASE } from '../utils/api';
 const menuItems = [
   { icon: LayoutDashboard, label: 'Command Center', path: '/' },
   { icon: Cpu, label: 'Devices', path: '/devices' },
-  { icon: BarChart3, label: 'Analytics', path: '/analytics' },
+  { icon: BarChart3, label: 'Analysis', path: '/analysis' },
   { icon: Monitor, label: 'Live Monitor', path: '/live_monitor' },
   { icon: MousePointer2, label: 'Touch Control', path: '/touch_monitor' },
   { icon: Terminal, label: 'Terminal', path: '/terminal' },
