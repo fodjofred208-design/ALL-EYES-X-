@@ -100,7 +100,7 @@ const Login: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
             <div className="relative w-24 h-20 rounded-xl border-2 border-red-500 bg-black/80 shadow-[0_0_35px_rgba(239,68,68,0.45)] flex items-center justify-center">
               <div className="absolute -top-8 w-14 h-12 rounded-t-full border-2 border-red-500 border-b-0" />
               <div className="scale-[0.28] absolute inset-0 flex items-center justify-center opacity-90">
-                <NeuralEye size={150} color="#ef4444" speed={2.2} />
+                <NeuralEye size={150} color="#ef4444" />
               </div>
               <span className="relative z-10 text-[11px] font-orbitron text-red-300 tracking-[0.35em] ml-1">LOCK</span>
             </div>
@@ -116,7 +116,7 @@ const Login: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
 
           <div className="flex flex-col items-center mb-10">
             <div className={`mb-6 scale-90 ${securityState ? 'animate-pulse' : ''}`}>
-              <NeuralEye size={150} color={eyeColor} speed={securityState ? 2 : 1.25} />
+              <NeuralEye size={150} color={eyeColor} />
             </div>
             <h2 className={`text-3xl font-bold font-orbitron tracking-[0.2em] uppercase ${securityState ? 'text-red-500' : 'text-green-500 neon-text-green'}`}>
               ALL EYES X
