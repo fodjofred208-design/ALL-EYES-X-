@@ -1369,6 +1369,21 @@ def dashboard():
 def analysis():
     return serve_spa()
 
+@app.route('/topology')
+@login_required
+def topology():
+    return serve_spa()
+
+@app.route('/alerts')
+@login_required
+def alerts_page():
+    return serve_spa()
+
+@app.route('/chart-analysis')
+@login_required
+def chart_analysis():
+    return serve_spa()
+
 @app.route('/analytics')
 @login_required
 def analytics():
@@ -3259,6 +3274,40 @@ def api_heartbeat():
 # ============================================================
 # API: COMMANDS
 # ============================================================
+def _device_row(device_id):
+    """Device record from the in-memory cache, falling back to the database.
+
+    connected_devices is a per-process cache. It is reloaded from the database at
+    startup, so a single server is always consistent - but the moment more than
+    one worker is running, or a device registered through another process, a
+    cache-only lookup 404s for a device that plainly exists in the table. Reading
+    the table as a fallback keeps these endpoints honest instead of claiming a
+    known device does not exist.
+
+    Deleted devices are excluded, so removal still removes.
+    """
+    dev = connected_devices.get(device_id)
+    if dev:
+        return dev
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM devices WHERE id=? AND COALESCE(deleted, 0) = 0",
+            (device_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def _device_hostname(device_id):
+    """Hostname for audit/activity messages, cache-then-database."""
+    row = _device_row(device_id) or {}
+    return row.get('hostname') or device_id[:8]
+
+
 @app.route('/api/command', methods=['POST'])
 @login_required
 def api_send_command():
@@ -3272,7 +3321,7 @@ def api_send_command():
             return jsonify({'error': 'device_id is required'}), 400
         if not command:
             return jsonify({'error': 'command is required'}), 400
-        if device_id not in connected_devices:
+        if _device_row(device_id) is None:
             return jsonify({'error': 'Device not found'}), 404
 
         task = {
@@ -3286,7 +3335,7 @@ def api_send_command():
             pending_tasks_queue[device_id] = []
         pending_tasks_queue[device_id].append(task)
 
-        hostname = connected_devices[device_id].get('hostname', device_id[:8])
+        hostname = _device_hostname(device_id)
         actor = session.get('user', 'unknown-admin')
         conn = get_db()
         conn.execute(
@@ -3340,8 +3389,8 @@ def api_send_command_batch():
         skipped = []
 
         for device_id in device_ids:
-            if device_id not in connected_devices:
-                skipped.append({'device_id': device_id, 'reason': 'not connected'})
+            if _device_row(device_id) is None:
+                skipped.append({'device_id': device_id, 'reason': 'unknown device'})
                 continue
 
             command_id = str(uuid.uuid4())
@@ -3354,7 +3403,7 @@ def api_send_command_batch():
             }
             pending_tasks_queue.setdefault(device_id, []).append(task)
 
-            hostname = connected_devices[device_id].get('hostname', device_id[:8])
+            hostname = _device_hostname(device_id)
             conn = get_db()
             conn.execute(
                 "INSERT INTO command_results (command_id, device_id, command, requested_by, queued_at, success) "
@@ -3404,9 +3453,9 @@ def api_send_msg():
         delivered = []
 
         for device_id in device_ids:
-            if device_id not in connected_devices:
+            if _device_row(device_id) is None:
                 continue
-            hostname = connected_devices[device_id].get('hostname', device_id[:8])
+            hostname = _device_hostname(device_id)
             pending_tasks_queue.setdefault(device_id, []).append({
                 'id': str(uuid.uuid4()),
                 'type': 'notify_user',
@@ -3501,11 +3550,11 @@ def api_remote_takeover():
         device_id = data.get('device_id', '')
         note = str(data.get('note', ''))[:300]
 
-        if device_id not in connected_devices:
+        if _device_row(device_id) is None:
             return jsonify({'error': 'Device not found'}), 404
 
         actor = session.get('user', 'unknown-admin')
-        hostname = connected_devices[device_id].get('hostname', device_id[:8])
+        hostname = _device_hostname(device_id)
         session_id = str(uuid.uuid4())
         now_iso = datetime.now().isoformat()
 
@@ -3700,7 +3749,7 @@ def _measure_fps(kind, device_id):
 @app.route('/api/device/<device_id>/software', methods=['POST'])
 def api_device_software_update(device_id):
     """Store the installed-apps / files / media inventory from the agent."""
-    if device_id not in connected_devices:
+    if _device_row(device_id) is None:
         return jsonify({'error': 'Device not found'}), 404
     try:
         data = request.get_json(force=True) or {}
@@ -3859,7 +3908,7 @@ def api_webcam_latest(device_id):
 @app.route('/api/webcam/<device_id>/start', methods=['POST'])
 @login_required
 def start_webcam(device_id):
-    if device_id not in connected_devices:
+    if _device_row(device_id) is None:
         return jsonify({'error': 'Device not found'}), 404
     data = request.get_json() or {}
     camera = data.get('camera', 'front')
@@ -3883,7 +3932,7 @@ def start_webcam(device_id):
 @app.route('/api/webcam/<device_id>/stop', methods=['POST'])
 @login_required
 def stop_webcam(device_id):
-    if device_id not in connected_devices:
+    if _device_row(device_id) is None:
         return jsonify({'error': 'Device not found'}), 404
     payload = {'device_id': device_id, 'command': 'stop'}
     socketio.emit('webcam_command', payload)
@@ -3895,7 +3944,7 @@ def stop_webcam(device_id):
 @app.route('/api/webcam/<device_id>/switch', methods=['POST'])
 @login_required
 def switch_webcam(device_id):
-    if device_id not in connected_devices:
+    if _device_row(device_id) is None:
         return jsonify({'error': 'Device not found'}), 404
     data = request.get_json() or {}
     camera = data.get('camera', 'front')
@@ -3927,7 +3976,7 @@ def api_devices():
 @app.route('/api/device/<device_id>', methods=['GET'])
 @login_required
 def api_device_detail(device_id):
-    dev = connected_devices.get(device_id)
+    dev = _device_row(device_id)
     if not dev:
         return jsonify({'error': 'Device not found'}), 404
 
@@ -3945,7 +3994,7 @@ def api_device_detail(device_id):
 @app.route('/api/device/<device_id>/detail', methods=['GET'])
 @login_required
 def api_device_detail_full(device_id):
-    dev = connected_devices.get(device_id)
+    dev = _device_row(device_id)
     if not dev:
         return jsonify({'error': 'Device not found'}), 404
     
@@ -4158,10 +4207,10 @@ def api_device_disconnect(device_id):
     that. The agent stops its own loop; nothing is killed or hidden from the
     person at the machine, who sees the agent exit in its own console.
     """
-    if device_id not in connected_devices:
+    if _device_row(device_id) is None:
         return jsonify({'error': 'Device not found'}), 404
 
-    hostname = connected_devices[device_id].get('hostname', device_id[:8])
+    hostname = _device_hostname(device_id)
     actor = session.get('user', 'unknown-admin')
 
     pending_tasks_queue.setdefault(device_id, []).append({
@@ -4186,10 +4235,10 @@ def api_device_disconnect(device_id):
 @app.route('/api/device/<device_id>/remove', methods=['POST'])
 @login_required
 def api_device_remove(device_id):
-    if device_id not in connected_devices:
+    if _device_row(device_id) is None:
         return jsonify({'error': 'Device not found'}), 404
     
-    hostname = connected_devices[device_id].get('hostname', device_id[:8])
+    hostname = _device_hostname(device_id)
     
     conn = get_db()
     conn.execute("UPDATE devices SET deleted=1, status='offline' WHERE id=?", (device_id,))
@@ -4225,7 +4274,7 @@ def api_device_remove(device_id):
 @app.route('/api/device/<device_id>/preference', methods=['GET', 'POST'])
 @login_required
 def api_device_preference(device_id):
-    if device_id not in connected_devices:
+    if _device_row(device_id) is None:
         return jsonify({'error': 'Device not found'}), 404
     
     if request.method == 'GET':
@@ -4261,7 +4310,7 @@ def api_device_preference(device_id):
 # ============================================================
 @app.route('/api/device/<device_id>/hardware', methods=['POST'])
 def api_device_hardware_update(device_id):
-    if device_id not in connected_devices:
+    if _device_row(device_id) is None:
         return jsonify({'error': 'Device not found'}), 404
     
     try:
@@ -4774,7 +4823,7 @@ def api_analysis_device_metrics(device_id):
     Fields with no data are returned as null, never as 0, so the UI can say
     "not reported" instead of drawing a misleading flat line at zero.
     """
-    dev = connected_devices.get(device_id)
+    dev = _device_row(device_id)
     if not dev:
         return jsonify({'error': 'Device not found'}), 404
 
@@ -4965,7 +5014,7 @@ def api_nmap_scan():
         target = data.get('target', '')
         scan_type = data.get('scan_type', 'top_ports')
 
-        if device_id not in connected_devices:
+        if _device_row(device_id) is None:
             return jsonify({'error': 'Device not found'}), 404
         if scan_type not in NMAP_SCAN_TYPES:
             return jsonify({'error': 'Invalid scan type'}), 400
