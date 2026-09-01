@@ -201,13 +201,14 @@ export const ANALYSIS_CATEGORIES: AnalysisCategory[] = [
       {
         id: 'ioc',
         title: 'IOC Detection',
-        status: 'deferred',
-        telemetry: 'None.',
-        history: 'none',
+        status: 'partial',
+        telemetry:
+          'Analyst-supplied indicators (IP, domain, hash, process, URL) matched against stored log events and the connection table.',
+        history: 'historical',
         missing:
-          'There is no threat-intelligence integration (no VirusTotal, OTX, MISP or local indicator store) and no hash collection, so there is nothing to match against.',
+          'No external threat-intelligence feed is connected - no VirusTotal, OTX or MISP - so every indicator is analyst-supplied and the panel says so plainly. The agent collects no file hashes, so a hash indicator can only match a hash that happens to appear in log text.',
         unlocks:
-          'Indicator matches with source and confidence once a threat-intel feed is connected.',
+          'Feed-sourced indicators carrying the feed confidence, and real file-hash matching, once a feed and a file sensor exist.',
       },
       {
         id: 'firewall',

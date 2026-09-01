@@ -538,6 +538,34 @@ def init_db():
             UNIQUE(rule_id, log_event_id)
         );
 
+        CREATE TABLE IF NOT EXISTS ioc_indicators (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            value TEXT NOT NULL,
+            type TEXT DEFAULT 'ip',
+            source TEXT DEFAULT 'analyst',
+            confidence TEXT DEFAULT 'medium',
+            severity TEXT DEFAULT 'medium',
+            note TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            added_at REAL DEFAULT 0,
+            UNIQUE(value, type)
+        );
+
+        CREATE TABLE IF NOT EXISTS ioc_matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            indicator_id INTEGER DEFAULT 0,
+            value TEXT DEFAULT '',
+            type TEXT DEFAULT '',
+            source TEXT DEFAULT '',
+            confidence TEXT DEFAULT '',
+            severity TEXT DEFAULT '',
+            device_id TEXT DEFAULT '',
+            where_found TEXT DEFAULT '',
+            detail TEXT DEFAULT '',
+            matched_at REAL DEFAULT 0,
+            UNIQUE(indicator_id, device_id, detail)
+        );
+
         CREATE TABLE IF NOT EXISTS auth_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT DEFAULT '',
@@ -5438,6 +5466,178 @@ def api_sigma_matches():
             for r in rows
         },
     }), 200
+
+
+# ============================================================
+# IOC DETECTION
+# ------------------------------------------------------------
+# Indicators are supplied by the analyst and matched against data the system
+# actually collected - log events and the connection table. There is no external
+# threat-intelligence feed connected, and none is implied: `source` records who
+# supplied the indicator, defaulting to 'analyst'. When a feed is connected it
+# becomes the source and confidence carries the feed's own score.
+#
+# Nothing here invents a threat. An indicator only produces a match when the
+# value genuinely appears in collected data.
+# ============================================================
+
+@app.route('/api/analysis/ioc/indicators', methods=['GET', 'POST'])
+@login_required
+def api_ioc_indicators():
+    conn = get_db()
+    try:
+        if request.method == 'POST':
+            data = request.get_json(silent=True) or {}
+            value = str(data.get('value') or '').strip()
+            if not value:
+                return jsonify({'error': 'value is required'}), 400
+            itype = str(data.get('type') or 'ip').lower()
+            if itype not in ('ip', 'domain', 'hash', 'process', 'url'):
+                return jsonify({'error': 'type must be ip, domain, hash, process or url'}), 400
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO ioc_indicators
+                   (value, type, source, confidence, severity, note, enabled, added_at)
+                   VALUES (?,?,?,?,?,?,1,?)""",
+                (
+                    value, itype,
+                    str(data.get('source') or 'analyst'),
+                    str(data.get('confidence') or 'medium').lower(),
+                    str(data.get('severity') or 'medium').lower(),
+                    str(data.get('note') or '')[:300],
+                    time.time(),
+                ),
+            )
+            conn.commit()
+            if not cur.rowcount:
+                return jsonify({'error': 'indicator already exists'}), 409
+            return jsonify({'success': True, 'value': value, 'type': itype}), 200
+
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM ioc_indicators ORDER BY severity, added_at DESC"
+        ).fetchall()]
+        return jsonify({
+            'indicators': rows,
+            'total': len(rows),
+            'external_feed_connected': False,
+            'note': (
+                'Indicators are analyst-supplied. No external threat-intelligence feed '
+                'is connected, so no result here claims to come from one.'
+            ),
+        }), 200
+    except sqlite3.OperationalError as exc:
+        return jsonify({'error': str(exc)}), 500
+    finally:
+        conn.close()
+
+
+@app.route('/api/analysis/ioc/run', methods=['POST'])
+@login_required
+def api_ioc_run():
+    """Match every enabled indicator against stored logs and connections."""
+    conn = get_db()
+    try:
+        indicators = [dict(r) for r in conn.execute(
+            "SELECT * FROM ioc_indicators WHERE enabled=1"
+        ).fetchall()]
+        logs = [dict(r) for r in conn.execute(
+            "SELECT * FROM log_events ORDER BY ingested_at DESC LIMIT 3000"
+        ).fetchall()]
+        conns = [dict(r) for r in conn.execute(
+            "SELECT * FROM network_connections"
+        ).fetchall()]
+    except sqlite3.OperationalError:
+        indicators, logs, conns = [], [], []
+
+    results, new_matches = [], 0
+    for ind in indicators:
+        value = str(ind.get('value') or '')
+        needle = value.lower()
+        hits = 0
+        if not needle:
+            continue
+
+        for log in logs:
+            hay = ' '.join(str(log.get(k) or '') for k in ('message', 'unit', 'host')).lower()
+            if needle not in hay:
+                continue
+            hits += 1
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO ioc_matches
+                   (indicator_id, value, type, source, confidence, severity,
+                    device_id, where_found, detail, matched_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    ind['id'], value, ind.get('type'), ind.get('source'),
+                    ind.get('confidence'), ind.get('severity'), log.get('device_id'),
+                    'log_event', str(log.get('message') or '')[:400], time.time(),
+                ),
+            )
+            new_matches += cur.rowcount or 0
+
+        for c in conns:
+            fields = {
+                'remote_ip': str(c.get('remote_ip') or ''),
+                'local_ip': str(c.get('local_ip') or ''),
+            }
+            target = fields.get('remote_ip') if ind.get('type') == 'ip' else None
+            haystack = target if target else ' '.join(fields.values())
+            if needle not in haystack.lower():
+                continue
+            hits += 1
+            detail = f"{c.get('local_ip')}:{c.get('local_port')} -> {c.get('remote_ip')}:{c.get('remote_port')}"
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO ioc_matches
+                   (indicator_id, value, type, source, confidence, severity,
+                    device_id, where_found, detail, matched_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    ind['id'], value, ind.get('type'), ind.get('source'),
+                    ind.get('confidence'), ind.get('severity'), c.get('device_id'),
+                    'connection', detail[:400], time.time(),
+                ),
+            )
+            new_matches += cur.rowcount or 0
+
+        results.append({
+            'indicator_id': ind['id'], 'value': value, 'type': ind.get('type'),
+            'severity': ind.get('severity'), 'hits': hits,
+        })
+
+    try:
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        conn.close()
+
+    return jsonify({
+        'results': results,
+        'indicators_checked': len(indicators),
+        'logs_scanned': len(logs),
+        'connections_scanned': len(conns),
+        'new_matches': new_matches,
+        'note': 'Matches come only from data the agents actually reported.',
+    }), 200
+
+
+@app.route('/api/analysis/ioc/matches', methods=['GET'])
+@login_required
+def api_ioc_matches():
+    conn = get_db()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM ioc_matches ORDER BY matched_at DESC, id DESC LIMIT 500"
+        ).fetchall()]
+    except sqlite3.OperationalError:
+        rows = []
+    finally:
+        conn.close()
+
+    hosts = {d.get('id'): d.get('hostname', 'Unknown') for d in connected_devices.values()}
+    for r in rows:
+        r['hostname'] = hosts.get(r['device_id'], r['device_id'])
+
+    return jsonify({'matches': rows, 'total': len(rows)}), 200
 
 
 @app.route('/api/analysis/flows', methods=['GET'])
