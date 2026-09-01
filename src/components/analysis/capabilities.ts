@@ -253,13 +253,14 @@ export const ANALYSIS_CATEGORIES: AnalysisCategory[] = [
       {
         id: 'loganalyzer',
         title: 'Log Analyzer',
-        status: 'deferred',
-        telemetry: 'None stored.',
-        history: 'none',
+        status: 'partial',
+        telemetry:
+          'Operating-system log events shipped by the agent: journalctl on Linux, Get-WinEvent (System, Application, Security) on Windows, log show on macOS.',
+        history: 'historical',
         missing:
-          'Windows Event Log and syslog commands exist in the Terminal command set, but nothing collects or stores log events. There is no log table.',
+          'Severity is coarse - derived from the message text on Linux rather than from a structured level field. Syslog forwarding from other hosts is not collected, only the local journal. On Linux the agent user must be in the systemd-journal or adm group; the panel reports that reason rather than implying there are no events.',
         unlocks:
-          'Timestamp, source, event id, severity, user and message search once a log collector ships.',
+          'Structured severity and forwarded syslog once the agent collects them.',
       },
       {
         id: 'sigma',

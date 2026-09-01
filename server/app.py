@@ -499,6 +499,20 @@ def init_db():
             is_gateway INTEGER DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS log_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT DEFAULT '',
+            ts TEXT DEFAULT '',
+            source TEXT DEFAULT '',
+            host TEXT DEFAULT '',
+            unit TEXT DEFAULT '',
+            event_id TEXT DEFAULT '',
+            message TEXT DEFAULT '',
+            severity TEXT DEFAULT 'info',
+            ingested_at REAL DEFAULT 0,
+            UNIQUE(device_id, ts, message)
+        );
+
         CREATE TABLE IF NOT EXISTS auth_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT DEFAULT '',
@@ -621,6 +635,8 @@ def init_db():
     # Flow and link tables are written often and read newest-first.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_netconn_device ON network_connections (device_id, seen_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_netlinks_device ON network_links (device_id, seen_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_logevents_device ON log_events (device_id, ingested_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_logevents_severity ON log_events (severity)")
     ensure_column('alerts', 'severity', "TEXT DEFAULT 'info'")
     ensure_column('alerts', 'title', "TEXT DEFAULT ''")
     ensure_column('alerts', 'category', "TEXT DEFAULT 'system'")
@@ -5040,6 +5056,126 @@ def api_device_links(device_id):
     finally:
         conn.close()
     return jsonify({'success': True, 'stored': stored, 'gateway': gateway}), 200
+
+
+# ============================================================
+# LOG SENSOR
+# ------------------------------------------------------------
+# Stores OS log events the agent ships. Inserted with INSERT OR IGNORE against a
+# UNIQUE(device_id, ts, message) constraint, so re-shipping the same window on
+# the next poll does not duplicate history.
+# ============================================================
+
+LOG_EVENTS_PER_DEVICE = 4000
+
+
+@app.route('/api/device/<device_id>/logs', methods=['POST'])
+def api_device_logs(device_id):
+    """Ingest OS log events from the agent."""
+    if _device_row(device_id) is None:
+        return jsonify({'error': 'Device not found'}), 404
+    data = request.get_json(silent=True) or {}
+    events = data.get('events')
+    if not isinstance(events, list):
+        return jsonify({'error': 'events list required'}), 400
+    sensor = data.get('sensor') if isinstance(data.get('sensor'), dict) else {}
+    now = time.time()
+
+    conn = get_db()
+    try:
+        inserted = 0
+        for e in events[:2000]:
+            if not isinstance(e, dict):
+                continue
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO log_events
+                   (device_id, ts, source, host, unit, event_id, message, severity, ingested_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    device_id,
+                    str(e.get('timestamp') or ''),
+                    str(e.get('source') or ''),
+                    str(e.get('host') or ''),
+                    str(e.get('unit') or ''),
+                    str(e.get('event_id') or ''),
+                    str(e.get('message') or '')[:1000],
+                    str(e.get('severity') or 'info').lower(),
+                    now,
+                ),
+            )
+            inserted += cur.rowcount or 0
+        # Keep the newest window per device.
+        conn.execute(
+            f"""DELETE FROM log_events WHERE device_id=? AND id NOT IN (
+                  SELECT id FROM log_events WHERE device_id=?
+                  ORDER BY ingested_at DESC, id DESC LIMIT {int(LOG_EVENTS_PER_DEVICE)})""",
+            (device_id, device_id),
+        )
+        conn.commit()
+        total = conn.execute(
+            "SELECT COUNT(*) AS c FROM log_events WHERE device_id=?", (device_id,)
+        ).fetchone()['c']
+    finally:
+        conn.close()
+
+    return jsonify({
+        'success': True,
+        'inserted': inserted,
+        'total': total,
+        'sensor': sensor,
+    }), 200
+
+
+@app.route('/api/analysis/logs', methods=['GET'])
+@login_required
+def api_analysis_logs():
+    """Stored log events with severity / device / text filters."""
+    only = (request.args.get('device_id') or '').strip() or None
+    severity = (request.args.get('severity') or '').strip().lower() or None
+    needle = (request.args.get('q') or '').strip() or None
+
+    where, args = [], []
+    if only:
+        where.append("device_id = ?"); args.append(only)
+    if severity and severity != 'all':
+        where.append("severity = ?"); args.append(severity)
+    if needle:
+        where.append("(message LIKE ? OR unit LIKE ?)"); args += [f"%{needle}%", f"%{needle}%"]
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+
+    conn = get_db()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT * FROM log_events{clause} ORDER BY ingested_at DESC, id DESC LIMIT 500",
+            args,
+        ).fetchall()]
+        counts = {
+            r['severity']: r['c'] for r in conn.execute(
+                "SELECT severity, COUNT(*) AS c FROM log_events GROUP BY severity"
+            ).fetchall()
+        }
+        devices_reporting = conn.execute(
+            "SELECT COUNT(DISTINCT device_id) AS c FROM log_events"
+        ).fetchone()['c']
+    except sqlite3.OperationalError:
+        rows, counts, devices_reporting = [], {}, 0
+    finally:
+        conn.close()
+
+    hosts = {d.get('id'): d.get('hostname', 'Unknown') for d in connected_devices.values()}
+    for r in rows:
+        r['hostname'] = hosts.get(r['device_id'], r['device_id'])
+
+    return jsonify({
+        'events': rows,
+        'total': len(rows),
+        'counts_by_severity': counts,
+        'devices_reporting': devices_reporting,
+        'note': (
+            'Operating-system log events shipped by the agent. If a device reports '
+            'nothing, its sensor status explains why - typically journal permissions.'
+        ),
+    }), 200
 
 
 @app.route('/api/analysis/flows', methods=['GET'])

