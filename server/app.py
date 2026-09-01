@@ -513,6 +513,31 @@ def init_db():
             UNIQUE(device_id, ts, message)
         );
 
+        CREATE TABLE IF NOT EXISTS sigma_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_id TEXT DEFAULT '',
+            title TEXT DEFAULT '',
+            level TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            body TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            builtin INTEGER DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS sigma_matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_id TEXT DEFAULT '',
+            rule_title TEXT DEFAULT '',
+            level TEXT DEFAULT '',
+            device_id TEXT DEFAULT '',
+            log_event_id INTEGER DEFAULT 0,
+            ts TEXT DEFAULT '',
+            unit TEXT DEFAULT '',
+            message TEXT DEFAULT '',
+            matched_at REAL DEFAULT 0,
+            UNIQUE(rule_id, log_event_id)
+        );
+
         CREATE TABLE IF NOT EXISTS auth_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT DEFAULT '',
@@ -688,8 +713,97 @@ def dedupe_devices():
     except Exception as e:
         print(f"[DB] Dedupe skipped: {e}")
 
+BUILTIN_SIGMA_RULES = [
+    {
+        'rule_id': 'aeyes-ssh-bruteforce',
+        'title': 'SSH Brute Force Attempt',
+        'level': 'high',
+        'description': 'Repeated failed SSH password attempts, a common credential-guessing pattern.',
+        'body': """title: SSH Brute Force Attempt
+id: aeyes-ssh-bruteforce
+level: high
+detection:
+    selection:
+        unit|contains: sshd
+        message|contains: Failed password
+    condition: selection
+""",
+    },
+    {
+        'rule_id': 'aeyes-oom-kill',
+        'title': 'Out Of Memory Kill',
+        'level': 'medium',
+        'description': 'The kernel killed a process for memory pressure; can indicate a leak or exhaustion.',
+        'body': """title: Out Of Memory Kill
+id: aeyes-oom-kill
+level: medium
+detection:
+    selection:
+        unit|contains: kernel
+        message|contains: Out of memory
+    condition: selection
+""",
+    },
+    {
+        'rule_id': 'aeyes-sudo-escalation',
+        'title': 'Privilege Escalation via sudo',
+        'level': 'medium',
+        'description': 'A user escalated privileges with sudo.',
+        'body': """title: Privilege Escalation via sudo
+id: aeyes-sudo-escalation
+level: medium
+detection:
+    selection:
+        unit|contains: sudo
+        message|contains: COMMAND=
+    condition: selection
+""",
+    },
+    {
+        'rule_id': 'aeyes-service-failure',
+        'title': 'Service Failed to Start',
+        'level': 'high',
+        'description': 'A systemd unit entered a failed state.',
+        'body': """title: Service Failed to Start
+id: aeyes-service-failure
+level: high
+detection:
+    selection:
+        unit|contains: systemd
+        message|contains: Failed
+    exclusion:
+        message|contains: Failed password
+    condition: selection and not exclusion
+""",
+    },
+]
+
+
+def seed_sigma_rules():
+    """Insert the built-in rules once. Never overwrites an edited rule."""
+    conn = get_db()
+    try:
+        for rule in BUILTIN_SIGMA_RULES:
+            existing = conn.execute(
+                "SELECT id FROM sigma_rules WHERE rule_id=?", (rule['rule_id'],)
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                """INSERT INTO sigma_rules (rule_id, title, level, description, body, enabled, builtin)
+                   VALUES (?,?,?,?,?,1,1)""",
+                (rule['rule_id'], rule['title'], rule['level'], rule['description'], rule['body']),
+            )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        conn.close()
+
+
 init_db()
 dedupe_devices()
+seed_sigma_rules()
 
 # ============================================================
 # CENTRAL STATE SOURCE OF TRUTH
@@ -5175,6 +5289,154 @@ def api_analysis_logs():
             'Operating-system log events shipped by the agent. If a device reports '
             'nothing, its sensor status explains why - typically journal permissions.'
         ),
+    }), 200
+
+
+# ============================================================
+# SIGMA DETECTION
+# ------------------------------------------------------------
+# Rule evaluation happens here, in the backend, never in the browser. A rule that
+# cannot be evaluated is reported as `unsupported` with the reason rather than
+# silently matching nothing - a detection that appears to work but never fires is
+# the worst outcome for a detection engine.
+# ============================================================
+
+@app.route('/api/analysis/sigma/rules', methods=['GET'])
+@login_required
+def api_sigma_rules():
+    """List rules with parsed metadata and their support status."""
+    import sigma_engine
+    conn = get_db()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM sigma_rules ORDER BY builtin DESC, level, title"
+        ).fetchall()]
+    except sqlite3.OperationalError:
+        rows = []
+    finally:
+        conn.close()
+
+    out = []
+    for r in rows:
+        meta = sigma_engine.rule_summary(r.get('body') or '')
+        try:
+            sigma_engine.parse_rule(r.get('body') or '')
+            status, reason = 'supported', None
+        except Exception as exc:
+            status, reason = 'unsupported', str(exc)
+        out.append({
+            'rule_id': r.get('rule_id'),
+            'title': meta.get('title') or r.get('title'),
+            'level': meta.get('level') or r.get('level'),
+            'description': r.get('description'),
+            'condition': meta.get('condition'),
+            'enabled': bool(r.get('enabled')),
+            'builtin': bool(r.get('builtin')),
+            'status': status,
+            'reason': reason,
+        })
+    return jsonify({'rules': out, 'total': len(out)}), 200
+
+
+@app.route('/api/analysis/sigma/run', methods=['POST'])
+@login_required
+def api_sigma_run():
+    """Evaluate every enabled rule against stored log events."""
+    import sigma_engine
+    only = (request.get_json(silent=True) or {}).get('device_id')
+
+    conn = get_db()
+    try:
+        rules = [dict(r) for r in conn.execute(
+            "SELECT * FROM sigma_rules WHERE enabled=1"
+        ).fetchall()]
+        if only:
+            events = [dict(r) for r in conn.execute(
+                "SELECT * FROM log_events WHERE device_id=? ORDER BY ingested_at DESC LIMIT 2000",
+                (only,),
+            ).fetchall()]
+        else:
+            events = [dict(r) for r in conn.execute(
+                "SELECT * FROM log_events ORDER BY ingested_at DESC LIMIT 2000"
+            ).fetchall()]
+    except sqlite3.OperationalError:
+        rules, events = [], []
+
+    results, new_matches = [], 0
+    conn2 = get_db()
+    try:
+        for rule in rules:
+            matched, error = sigma_engine.evaluate(rule.get('body') or '', events)
+            if error:
+                results.append({
+                    'rule_id': rule.get('rule_id'), 'title': rule.get('title'),
+                    'level': rule.get('level'), 'status': 'unsupported',
+                    'reason': error, 'matches': 0,
+                })
+                continue
+            for event in matched:
+                cur = conn2.execute(
+                    """INSERT OR IGNORE INTO sigma_matches
+                       (rule_id, rule_title, level, device_id, log_event_id, ts, unit, message, matched_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (
+                        rule.get('rule_id'), rule.get('title'), rule.get('level'),
+                        event.get('device_id'), event.get('id'), event.get('ts'),
+                        event.get('unit'), str(event.get('message') or '')[:500],
+                        time.time(),
+                    ),
+                )
+                new_matches += cur.rowcount or 0
+            results.append({
+                'rule_id': rule.get('rule_id'), 'title': rule.get('title'),
+                'level': rule.get('level'), 'status': 'evaluated',
+                'reason': None, 'matches': len(matched),
+            })
+        conn2.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        conn2.close()
+
+    return jsonify({
+        'results': results,
+        'rules_evaluated': sum(1 for r in results if r['status'] == 'evaluated'),
+        'rules_unsupported': sum(1 for r in results if r['status'] == 'unsupported'),
+        'events_scanned': len(events),
+        'new_matches': new_matches,
+        'note': (
+            'Rules are evaluated in the backend against stored log events. A rule '
+            'reported as unsupported uses syntax this engine does not implement - '
+            'it was not evaluated, not evaluated as empty.'
+        ),
+    }), 200
+
+
+@app.route('/api/analysis/sigma/matches', methods=['GET'])
+@login_required
+def api_sigma_matches():
+    """Stored detections, newest first."""
+    conn = get_db()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM sigma_matches ORDER BY matched_at DESC, id DESC LIMIT 500"
+        ).fetchall()]
+    except sqlite3.OperationalError:
+        rows = []
+    finally:
+        conn.close()
+
+    hosts = {d.get('id'): d.get('hostname', 'Unknown') for d in connected_devices.values()}
+    for r in rows:
+        r['hostname'] = hosts.get(r['device_id'], r['device_id'])
+
+    return jsonify({
+        'matches': rows,
+        'total': len(rows),
+        'by_rule': {
+            r['rule_id']: sum(1 for x in rows if x['rule_id'] == r['rule_id'])
+            for r in rows
+        },
     }), 200
 
 

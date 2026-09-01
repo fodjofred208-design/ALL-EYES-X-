@@ -265,12 +265,14 @@ export const ANALYSIS_CATEGORIES: AnalysisCategory[] = [
       {
         id: 'sigma',
         title: 'Sigma Rule Detection',
-        status: 'deferred',
-        telemetry: 'None.',
-        history: 'none',
+        status: 'partial',
+        telemetry:
+          'Four built-in rules evaluated in the backend against stored log events: SSH brute force, OOM kill, sudo privilege escalation, and service start failure.',
+        history: 'historical',
         missing:
-          'Sigma rules match against stored log events, and no log events are stored. This module depends on the Log Analyzer sensor.',
-        unlocks: 'Rule matches with the reasoning behind each match, once logs are collected.',
+          'A deliberate Sigma subset. Supported: field matching with contains/startswith/endswith and conditions of the form "selection" or "selection and not exclusion". Not supported: pipelines and field mappings, regular expressions, base64, temporal and correlation rules, and count aggregation. Rules using unsupported syntax are reported as unsupported with the reason rather than silently matching nothing.',
+        unlocks:
+          'Full Sigma coverage once a compliant evaluator or an external engine is integrated.',
       },
       {
         id: 'anomaly',
