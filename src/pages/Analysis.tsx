@@ -22,6 +22,7 @@ import { ConnectionAnalysis } from '../components/analysis/NetworkSensors';
 import LogAnalyzer from '../components/analysis/LogAnalyzer';
 import SigmaDetection from '../components/analysis/SigmaDetection';
 import IOCDetection from '../components/analysis/IOCDetection';
+import ThreatHeatMap from '../components/analysis/ThreatHeatMap';
 import {
   RiskRankingModule,
   OpenPortsModule,
@@ -343,9 +344,9 @@ const Analysis: React.FC = () => {
         </div>
         <div>
           <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
-            Threat Heat Map
+            Threat Geography · {dataStateLabel(findModule('heatmap')!)}
           </h3>
-          {deferred('heatmap')}
+          <ThreatHeatMap />
         </div>
       </AnalysisSection>
 

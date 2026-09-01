@@ -169,14 +169,15 @@ export const ANALYSIS_CATEGORIES: AnalysisCategory[] = [
       },
       {
         id: 'heatmap',
-        title: 'Threat Heat Map',
-        status: 'deferred',
-        telemetry: 'None.',
-        history: 'none',
+        title: 'Threat Geography',
+        status: 'partial',
+        telemetry:
+          'External destinations from the connection table, with connection counts, destination ports and which devices made the connection. Private ranges are excluded.',
+        history: 'current',
         missing:
-          'Devices carry latitude/longitude resolved from their own IP, but there is no attack-origin telemetry at all - no external source IPs, no connection events. Drawing arcs would mean inventing attack origins.',
+          'No geolocation service is configured, so no coordinates are emitted and no map arcs are drawn. The origin list itself is real and complete; only the map layer is missing. Inventing a latitude for an IP would be worse than showing none.',
         unlocks:
-          'Origin-to-destination arcs with severity once external connection telemetry is collected.',
+          'Map arcs with pulsing origin markers, dot size scaled by connection count, once a geolocation source supplies coordinates.',
       },
     ],
   },

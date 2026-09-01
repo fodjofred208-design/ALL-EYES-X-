@@ -5640,6 +5640,101 @@ def api_ioc_matches():
     return jsonify({'matches': rows, 'total': len(rows)}), 200
 
 
+# ============================================================
+# THREAT GEOGRAPHY
+# ------------------------------------------------------------
+# Built from external destinations in the connection table - real traffic the
+# agent observed, not modelled attack traffic.
+#
+# Geographic coordinates are only ever emitted when a geolocation source actually
+# supplies them. There is no geolocation service bundled with ALL EYES X, so by
+# default this returns origins with counts and no coordinates, and says so.
+# Inventing a latitude for an IP would be worse than showing none, so the map
+# layer stays empty until a geo source is configured rather than plotting guesses.
+# ============================================================
+
+def _is_private_ip(ip):
+    ip = str(ip or '')
+    return (
+        not ip
+        or ip.startswith('10.')
+        or ip.startswith('192.168.')
+        or ip.startswith('172.16.')
+        or ip.startswith('127.')
+        or ip == '0.0.0.0'
+        or ip.startswith('169.254.')
+    )
+
+
+@app.route('/api/analysis/threats', methods=['GET'])
+@login_required
+def api_analysis_threats():
+    """External destinations seen in the connection table, grouped by origin."""
+    conn = get_db()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM network_connections"
+        ).fetchall()]
+    except sqlite3.OperationalError:
+        rows = []
+    finally:
+        conn.close()
+
+    hosts = {d.get('id'): d.get('hostname', 'Unknown') for d in connected_devices.values()}
+    device_coords = {
+        d.get('id'): (d.get('latitude') or 0.0, d.get('longitude') or 0.0)
+        for d in connected_devices.values()
+    }
+
+    origins = {}
+    for r in rows:
+        remote = str(r.get('remote_ip') or '')
+        if _is_private_ip(remote):
+            continue
+        entry = origins.setdefault(remote, {
+            'remote_ip': remote,
+            'connections': 0,
+            'ports': set(),
+            'devices': set(),
+            'latitude': None,
+            'longitude': None,
+            'country': None,
+            'city': None,
+        })
+        entry['connections'] += 1
+        if r.get('remote_port'):
+            entry['ports'].add(int(r['remote_port']))
+        entry['devices'].add(hosts.get(r.get('device_id'), r.get('device_id')))
+
+    geo_available = False
+    out = []
+    for ip, e in origins.items():
+        out.append({
+            'remote_ip': e['remote_ip'],
+            'connections': e['connections'],
+            'ports': sorted(e['ports']),
+            'devices': sorted(e['devices']),
+            'latitude': e['latitude'],
+            'longitude': e['longitude'],
+            'country': e['country'],
+            'city': e['city'],
+        })
+    out.sort(key=lambda x: -x['connections'])
+
+    return jsonify({
+        'origins': out,
+        'total': len(out),
+        'geo_available': geo_available,
+        'has_data': bool(out),
+        'note': (
+            'Origins are external destinations the agents actually connected to. '
+            'No geolocation service is configured, so no coordinates are emitted - '
+            'an invented latitude would be worse than none. Connect a geolocation '
+            'source to enable the map arcs.'
+        ),
+    }), 200
+
+
 @app.route('/api/analysis/flows', methods=['GET'])
 @login_required
 def api_analysis_flows():
