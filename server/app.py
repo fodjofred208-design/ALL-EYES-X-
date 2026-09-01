@@ -4838,7 +4838,9 @@ def _telemetry_rows_for(ids):
         for row in conn.execute(
             f"SELECT * FROM telemetry WHERE device_id IN ({placeholders})", ids
         ).fetchall():
-            out[row['device_id']] = row
+            # Return a dict, not a sqlite3.Row: callers use .get() and a Row
+            # raises AttributeError for it.
+            out[row['device_id']] = dict(row)
     except sqlite3.OperationalError:
         pass  # table absent on an older database
     finally:
@@ -5731,6 +5733,157 @@ def api_analysis_threats():
             'No geolocation service is configured, so no coordinates are emitted - '
             'an invented latitude would be worse than none. Connect a geolocation '
             'source to enable the map arcs.'
+        ),
+    }), 200
+
+
+# ============================================================
+# AI SECURITY ADVISOR
+# ------------------------------------------------------------
+# Two clearly separated layers, because presenting inference as telemetry is the
+# one thing this panel must never do:
+#
+#   observed_facts  - deterministic, derived only from collected telemetry.
+#                     Always available, always true.
+#   advice          - model inference. Only present when ALLEYESX_AI_ENDPOINT is
+#                     configured, and labelled as inference.
+#
+# With no endpoint configured the panel shows the facts and says plainly that
+# inference is unavailable. It never substitutes a canned opinion for a model.
+# ============================================================
+
+AI_ENDPOINT = os.environ.get('ALLEYESX_AI_ENDPOINT', '').strip()
+AI_MODEL = os.environ.get('ALLEYESX_AI_MODEL', '').strip()
+AI_TIMEOUT = int(os.environ.get('ALLEYESX_AI_TIMEOUT', '45'))
+
+
+def build_observed_facts():
+    """Facts derived only from collected data. No inference, no estimates."""
+    devices = list(connected_devices.values())
+    tel = _telemetry_rows_for([d.get('id') for d in devices])
+    alerts_by_device = get_alerts_grouped([d.get('id') for d in devices])
+
+    facts = []
+    online = [d for d in devices if str(d.get('status', '')).lower() == 'online']
+    facts.append({
+        'label': 'Fleet',
+        'value': f"{len(online)} of {len(devices)} device(s) online",
+    })
+
+    all_ports, risky = set(), set()
+    fw_off = av_off = malware = susp_total = 0
+    for dev_id, row in tel.items():
+        for port in _parse_json_list(row.get('open_ports')):
+            try:
+                p_ = int(port)
+            except (TypeError, ValueError):
+                continue
+            all_ports.add(p_)
+            if p_ in HIGH_RISK_PORTS:
+                risky.add(p_)
+        if row.get('firewall') == 0:
+            fw_off += 1
+        if row.get('antivirus') == 0:
+            av_off += 1
+        if row.get('malware_detected'):
+            malware += 1
+        susp_total += len(_parse_json_list(row.get('suspicious_processes')))
+
+    if all_ports:
+        facts.append({
+            'label': 'Listening ports',
+            'value': f"{len(all_ports)} distinct, {len(risky)} high-risk"
+                     + (f" ({', '.join(str(p_) for p_ in sorted(risky)[:8])})" if risky else ''),
+        })
+    if fw_off:
+        facts.append({'label': 'Host firewall', 'value': f"disabled on {fw_off} device(s)"})
+    if av_off:
+        facts.append({'label': 'Antivirus', 'value': f"inactive on {av_off} device(s)"})
+    if malware:
+        facts.append({'label': 'Malware indicator', 'value': f"reported on {malware} device(s)"})
+    if susp_total:
+        facts.append({'label': 'Suspicious processes', 'value': f"{susp_total} reported"})
+
+    total_alerts = sum(len(v) for v in alerts_by_device.values())
+    if total_alerts:
+        facts.append({'label': 'Open alerts', 'value': f"{total_alerts} across the fleet"})
+
+    risks = []
+    for d in devices:
+        r = compute_device_risk(d.get('id'), d, tel.get(d.get('id')), alerts_by_device.get(d.get('id'), []))
+        risks.append((d.get('hostname', 'Unknown'), r['risk_score'], r['risk_level'], r['reasons']))
+    risks.sort(key=lambda x: -x[1])
+    for host, score, level, reasons in risks[:5]:
+        if score <= 0:
+            continue
+        top = reasons[0]['label'] if reasons else 'no specific factor'
+        facts.append({'label': f'Highest risk · {host}', 'value': f"{score} ({level}) — {top}"})
+
+    return facts
+
+
+@app.route('/api/analysis/ai', methods=['GET'])
+@login_required
+def api_analysis_ai():
+    """Observed facts, plus model inference only when an endpoint is configured."""
+    facts = build_observed_facts()
+
+    if not AI_ENDPOINT:
+        return jsonify({
+            'configured': False,
+            'observed_facts': facts,
+            'advice': None,
+            'note': (
+                'No AI endpoint is configured, so no inference is produced. The observed '
+                'facts above are derived directly from collected telemetry and are always '
+                'available. Set ALLEYESX_AI_ENDPOINT to enable inference - it will be '
+                'labelled separately and never presented as telemetry.'
+            ),
+        }), 200
+
+    prompt = (
+        "You are a security analyst. Below are observed facts from a monitoring system. "
+        "Produce a short assessment with sections: SUMMARY, RISK FACTORS, RECOMMENDATIONS, "
+        "PRIORITY ACTIONS. Base every statement only on the facts given; if something is "
+        "not covered by the facts, say so rather than guessing.\n\n"
+        + "\n".join(f"- {f['label']}: {f['value']}" for f in facts)
+    )
+
+    try:
+        import urllib.request as _urlreq
+        payload = json.dumps({
+            'model': AI_MODEL or None,
+            'messages': [{'role': 'user', 'content': prompt}],
+        }).encode('utf-8')
+        req = _urlreq.Request(
+            AI_ENDPOINT, data=payload, method='POST',
+            headers={'Content-Type': 'application/json'},
+        )
+        token = os.environ.get('ALLEYESX_AI_TOKEN', '').strip()
+        if token:
+            req.add_header('Authorization', f'Bearer {token}')
+        with _urlreq.urlopen(req, timeout=AI_TIMEOUT) as resp:
+            body = json.loads(resp.read().decode('utf-8', 'replace'))
+        text = (
+            (body.get('choices') or [{}])[0].get('message', {}).get('content')
+            or body.get('response')
+            or body.get('text')
+            or ''
+        )
+        advice = str(text).strip() or None
+        error = None if advice else 'endpoint returned no content'
+    except Exception as exc:
+        advice, error = None, str(exc)[:300]
+
+    return jsonify({
+        'configured': True,
+        'observed_facts': facts,
+        'advice': advice,
+        'advice_is_inference': True,
+        'error': error,
+        'note': (
+            'The advice below is model inference, not telemetry. The observed facts '
+            'above are what the system actually collected.'
         ),
     }), 200
 

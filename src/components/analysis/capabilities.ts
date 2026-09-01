@@ -225,13 +225,14 @@ export const ANALYSIS_CATEGORIES: AnalysisCategory[] = [
       {
         id: 'advisor',
         title: 'AI Security Advisor',
-        status: 'deferred',
-        telemetry: 'None.',
-        history: 'none',
+        status: 'partial',
+        telemetry:
+          'Observed facts derived deterministically from collected telemetry: fleet status, listening ports and high-risk count, firewall and antivirus state, malware indicators, suspicious processes, open alerts, and the highest-risk devices with their top factor.',
+        history: 'current',
         missing:
-          'There is no model integration anywhere in the stack. Rendering generated recommendations would present inference as telemetry, which this system does not do.',
+          'No AI endpoint is configured, so no model inference is produced. The observed-facts layer is complete and always available; only the advisory layer is missing. Set ALLEYESX_AI_ENDPOINT on the server to enable it.',
         unlocks:
-          'Summary, observations and prioritised actions once an LLM is connected - clearly separated from observed facts.',
+          'Model inference in a clearly separated advisory section, labelled as inference and never presented as telemetry.',
       },
     ],
   },

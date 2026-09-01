@@ -23,6 +23,7 @@ import LogAnalyzer from '../components/analysis/LogAnalyzer';
 import SigmaDetection from '../components/analysis/SigmaDetection';
 import IOCDetection from '../components/analysis/IOCDetection';
 import ThreatHeatMap from '../components/analysis/ThreatHeatMap';
+import AISecurityAdvisor from '../components/analysis/AISecurityAdvisor';
 import {
   RiskRankingModule,
   OpenPortsModule,
@@ -366,8 +367,10 @@ const Analysis: React.FC = () => {
           <IOCDetection />
         </div>
         <div>
-          <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">AI Security Advisor</h3>
-          {deferred('advisor')}
+          <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
+            AI Security Advisor · {dataStateLabel(findModule('advisor')!)}
+          </h3>
+          <AISecurityAdvisor />
         </div>
       </AnalysisSection>
 
