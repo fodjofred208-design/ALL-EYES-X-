@@ -19,6 +19,12 @@ dist/assets/*.css
 Thumbs.db
 
 # Local runtime data
+# SQLite WAL sidecars - transient, never commit
+server/aeyes_data.db-shm
+server/aeyes_data.db-wm
+server/aeyes_data.db-wal
+*.db-shm
+*.db-wal
 logs/
 *.log
 
