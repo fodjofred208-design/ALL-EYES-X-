@@ -15,6 +15,7 @@ import WelcomeExperience from './components/welcome/WelcomeExperience';
 import NotificationCenter from './components/NotificationCenter';
 
 import Analysis from './pages/Analysis';
+import Topology from './pages/Topology';
 import AlertCenter from './pages/AlertCenter';
 import ChartAnalysis from './pages/ChartAnalysis';
 import Devices from './pages/Device';
@@ -210,6 +211,7 @@ const AppContent: React.FC = () => {
           }
         />
               <Route path="/analysis" element={<Panel morph={MORPH_SLOW}><Analysis /></Panel>} />
+              <Route path="/topology" element={<Panel morph={MORPH_SLOW}><Topology /></Panel>} />
               <Route path="/alerts" element={<Panel morph={MORPH_SLOW}><Scoped><AlertCenter /></Scoped></Panel>} />
               <Route path="/chart-analysis" element={<Panel morph={MORPH_SLOW}><Scoped><ChartAnalysis /></Scoped></Panel>} />
               <Route path="/devices" element={<Panel><Devices /></Panel>} />

@@ -4146,6 +4146,43 @@ def api_device_detail_full(device_id):
 # ============================================================
 # DEVICE REMOVAL
 # ============================================================
+@app.route('/api/device/<device_id>/disconnect', methods=['POST'])
+@login_required
+def api_device_disconnect(device_id):
+    """Tell one agent to stop reporting, over the normal task queue.
+
+    This is a deliberate administrative action - decommissioning a node - so it
+    is explicit, requires an authenticated session, is audited, and is delivered
+    the same way every other command is: queued and picked up on the agent's next
+    heartbeat. It does not delete the device record; use the remove endpoint for
+    that. The agent stops its own loop; nothing is killed or hidden from the
+    person at the machine, who sees the agent exit in its own console.
+    """
+    if device_id not in connected_devices:
+        return jsonify({'error': 'Device not found'}), 404
+
+    hostname = connected_devices[device_id].get('hostname', device_id[:8])
+    actor = session.get('user', 'unknown-admin')
+
+    pending_tasks_queue.setdefault(device_id, []).append({
+        'id': str(uuid.uuid4()),
+        'type': 'disconnect',
+        'reason': 'administrator request',
+        'timestamp': datetime.now().isoformat(),
+    })
+
+    audit_event(actor, device_id, 'agent_disconnect', 'requested', f'host={hostname}')
+    activity('AGENT DISCONNECT', device_id=device_id[:8], host=hostname, by=actor)
+    add_notification('security', f'AGENT DISCONNECT: {actor} asked {hostname} to stop reporting')
+
+    return jsonify({
+        'success': True,
+        'device_id': device_id,
+        'status': 'queued',
+        'note': 'Queued for the agent\'s next heartbeat. The device record is kept.',
+    }), 200
+
+
 @app.route('/api/device/<device_id>/remove', methods=['POST'])
 @login_required
 def api_device_remove(device_id):

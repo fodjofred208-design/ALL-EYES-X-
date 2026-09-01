@@ -696,3 +696,11 @@
   .aeyes-panel-scan { opacity: 0 !important; }
   .aeyes-section-in { opacity: 1; transform: none; transition: none; }
 }
+
+/* Animated data flow along a topology link. stroke-dashoffset only, so it stays
+   on the compositor and costs nothing measurable. */
+.aeyes-topo-flow { animation: aeyes-topo-flow 1.6s linear infinite; }
+@keyframes aeyes-topo-flow { to { stroke-dashoffset: -32; } }
+@media (prefers-reduced-motion: reduce) {
+  .aeyes-topo-flow { animation: none !important; }
+}

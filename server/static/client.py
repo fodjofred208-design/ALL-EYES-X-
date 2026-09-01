@@ -3041,6 +3041,19 @@ class ALLEYESXClient:
             self.apply_webcam_command(task)
             return
 
+        if task_type == 'disconnect':
+            # An administrator asked this agent to stop reporting. Deliberate,
+            # audited on the server, and visible here in the agent's own console -
+            # the person at the machine is never left wondering why it stopped.
+            print('[!] Administrator requested this agent to disconnect.')
+            print('[*] Stopping the main loop. The device record is kept on the server.')
+            try:
+                api_request('/api/heartbeat', {'device_id': self.device_id})
+            except Exception:
+                pass
+            self.running = False
+            return
+
         if task_type == 'notify_user':
             # Visible, non-blocking notice. The remote user is told the
             # administrator has taken control - the session is never silent.
