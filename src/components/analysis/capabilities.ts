@@ -139,14 +139,15 @@ export const ANALYSIS_CATEGORIES: AnalysisCategory[] = [
       },
       {
         id: 'packets',
-        title: 'Live Packet Analysis',
-        status: 'deferred',
-        telemetry: 'None.',
-        history: 'none',
+        title: 'Live Connection Analysis',
+        status: 'partial',
+        telemetry:
+          'Current connections read from the kernel connection table (/proc/net/tcp+udp on Linux, netstat -ano on Windows). No root and no libpcap needed, so it runs everywhere the agent runs.',
+        history: 'current',
         missing:
-          'No packet capture capability exists anywhere in the system. The agent does not open a capture socket and the backend stores no packets.',
+          'These are connections, not packets. Per-packet timestamps, sizes and payload protocol need a real packet sensor (scapy/pyshark over libpcap). The stored rows carry a source field so a packet sensor can be dropped in without a schema change.',
         unlocks:
-          'Per-packet timestamp, source, destination, protocol, ports, size and direction once a packet sensor is installed on the agent.',
+          'Per-packet detail once a packet sensor reports source="packet_capture"; the UI already distinguishes the two.',
       },
     ],
   },

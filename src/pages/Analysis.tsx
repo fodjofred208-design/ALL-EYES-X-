@@ -18,6 +18,7 @@ import {
 import NmapScanner from '../components/analysis/NmapScanner';
 import NetworkDiscovery from '../components/analysis/NetworkDiscovery';
 import DeviceDeepDive from '../components/analysis/DeviceDeepDive';
+import { ConnectionAnalysis } from '../components/analysis/NetworkSensors';
 import {
   RiskRankingModule,
   OpenPortsModule,
@@ -316,9 +317,9 @@ const Analysis: React.FC = () => {
         </div>
         <div>
           <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
-            Live Packet Analysis
+            Live Connection Analysis · {dataStateLabel(findModule('packets')!)}
           </h3>
-          {deferred('packets')}
+          <ConnectionAnalysis />
         </div>
       </AnalysisSection>
 

@@ -475,6 +475,30 @@ def init_db():
             upload REAL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS network_connections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT DEFAULT '',
+            seen_at REAL DEFAULT 0,
+            protocol TEXT DEFAULT 'tcp',
+            local_ip TEXT DEFAULT '',
+            local_port INTEGER DEFAULT 0,
+            remote_ip TEXT DEFAULT '',
+            remote_port INTEGER DEFAULT 0,
+            state TEXT DEFAULT '',
+            source TEXT DEFAULT 'connection_table'
+        );
+
+        CREATE TABLE IF NOT EXISTS network_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT DEFAULT '',
+            seen_at REAL DEFAULT 0,
+            neighbour_ip TEXT DEFAULT '',
+            neighbour_mac TEXT DEFAULT '',
+            interface TEXT DEFAULT '',
+            state TEXT DEFAULT '',
+            is_gateway INTEGER DEFAULT 0
+        );
+
         CREATE TABLE IF NOT EXISTS auth_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT DEFAULT '',
@@ -594,6 +618,9 @@ def init_db():
     ensure_column('telemetry', 'encrypted_disk', 'INTEGER DEFAULT -1')
     ensure_column('telemetry', 'net_down_bps', 'REAL DEFAULT 0')
     ensure_column('telemetry', 'net_up_bps', 'REAL DEFAULT 0')
+    # Flow and link tables are written often and read newest-first.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_netconn_device ON network_connections (device_id, seen_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_netlinks_device ON network_links (device_id, seen_at DESC)")
     ensure_column('alerts', 'severity', "TEXT DEFAULT 'info'")
     ensure_column('alerts', 'title', "TEXT DEFAULT ''")
     ensure_column('alerts', 'category', "TEXT DEFAULT 'system'")
@@ -4910,6 +4937,214 @@ def api_analysis_device_metrics(device_id):
         'risk': risk,
         'has_telemetry': bool(tel),
         'has_traffic_history': bool(traffic),
+    }), 200
+
+
+# ============================================================
+# NETWORK FLOW + LINK SENSOR
+# ------------------------------------------------------------
+# Stores what the agent's connection sensor reports. The `source` column records
+# how the row was obtained, so a connection-table row is never presented as a
+# captured packet: the UI shows "connection table" until a real packet sensor
+# (scapy/pyshark over libpcap) is installed and reports source='packet_capture'.
+# ============================================================
+
+# Cap retained rows per device so a busy host cannot grow the table without
+# bound. Connections are a snapshot, not a history, so old rows have no value.
+FLOW_ROWS_PER_DEVICE = 800
+LINK_ROWS_PER_DEVICE = 300
+
+
+@app.route('/api/device/<device_id>/connections', methods=['POST'])
+def api_device_connections(device_id):
+    """Ingest a connection snapshot from the agent."""
+    if _device_row(device_id) is None:
+        return jsonify({'error': 'Device not found'}), 404
+    data = request.get_json(silent=True) or {}
+    rows = data.get('connections')
+    if not isinstance(rows, list):
+        return jsonify({'error': 'connections list required'}), 400
+    source = str(data.get('source') or 'connection_table')
+    now = time.time()
+
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM network_connections WHERE device_id=?", (device_id,))
+        conn.executemany(
+            """INSERT INTO network_connections
+               (device_id, seen_at, protocol, local_ip, local_port,
+                remote_ip, remote_port, state, source)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    device_id, now,
+                    str(r.get('protocol') or 'tcp'),
+                    str(r.get('local_ip') or ''),
+                    int(r.get('local_port') or 0),
+                    str(r.get('remote_ip') or ''),
+                    int(r.get('remote_port') or 0),
+                    str(r.get('state') or ''),
+                    source,
+                )
+                for r in rows[:FLOW_ROWS_PER_DEVICE]
+                if isinstance(r, dict)
+            ],
+        )
+        conn.commit()
+        stored = conn.execute(
+            "SELECT COUNT(*) AS c FROM network_connections WHERE device_id=?", (device_id,)
+        ).fetchone()['c']
+    finally:
+        conn.close()
+    return jsonify({'success': True, 'stored': stored, 'source': source}), 200
+
+
+@app.route('/api/device/<device_id>/links', methods=['POST'])
+def api_device_links(device_id):
+    """Ingest layer-2 neighbours and the default gateway from the agent."""
+    if _device_row(device_id) is None:
+        return jsonify({'error': 'Device not found'}), 404
+    data = request.get_json(silent=True) or {}
+    neighbours = data.get('neighbours')
+    if not isinstance(neighbours, list):
+        return jsonify({'error': 'neighbours list required'}), 400
+    gateway = str(data.get('gateway') or '')
+    now = time.time()
+
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM network_links WHERE device_id=?", (device_id,))
+        payload = []
+        for r in neighbours[:LINK_ROWS_PER_DEVICE]:
+            if not isinstance(r, dict):
+                continue
+            payload.append((
+                device_id, now,
+                str(r.get('ip') or ''),
+                str(r.get('mac') or ''),
+                str(r.get('interface') or data.get('interface') or ''),
+                str(r.get('state') or ''),
+                1 if str(r.get('ip') or '') == gateway else 0,
+            ))
+        if payload:
+            conn.executemany(
+                """INSERT INTO network_links
+                   (device_id, seen_at, neighbour_ip, neighbour_mac, interface, state, is_gateway)
+                   VALUES (?,?,?,?,?,?,?)""",
+                payload,
+            )
+        conn.commit()
+        stored = conn.execute(
+            "SELECT COUNT(*) AS c FROM network_links WHERE device_id=?", (device_id,)
+        ).fetchone()['c']
+    finally:
+        conn.close()
+    return jsonify({'success': True, 'stored': stored, 'gateway': gateway}), 200
+
+
+@app.route('/api/analysis/flows', methods=['GET'])
+@login_required
+def api_analysis_flows():
+    """Every reported connection across the fleet, newest snapshot per device."""
+    only = (request.args.get('device_id') or '').strip() or None
+    conn = get_db()
+    try:
+        if only:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT * FROM network_connections WHERE device_id=? ORDER BY remote_ip, local_port",
+                (only,),
+            ).fetchall()]
+        else:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT * FROM network_connections ORDER BY device_id, remote_ip, local_port"
+            ).fetchall()]
+    except sqlite3.OperationalError:
+        rows = []
+    finally:
+        conn.close()
+
+    hosts = {d.get('id'): d.get('hostname', 'Unknown') for d in connected_devices.values()}
+    for r in rows:
+        r['hostname'] = hosts.get(r['device_id'], r['device_id'])
+
+    # Honest summary: these are connections, not packets.
+    established = [r for r in rows if str(r.get('state', '')).upper().startswith('ESTABLISHED')]
+    listening = [r for r in rows if str(r.get('state', '')).upper() == 'LISTEN']
+    external = [
+        r for r in rows
+        if r.get('remote_ip')
+        and not str(r['remote_ip']).startswith(('10.', '192.168.', '172.16.', '127.', '0.0.0.0', '169.254.'))
+    ]
+    return jsonify({
+        'connections': rows,
+        'total': len(rows),
+        'established': len(established),
+        'listening': len(listening),
+        'external': len(external),
+        'sources': sorted({str(r.get('source') or 'connection_table') for r in rows}),
+        'is_packet_capture': any(str(r.get('source')) == 'packet_capture' for r in rows),
+        'note': (
+            'Rows come from the kernel connection table unless source says otherwise. '
+            'Per-packet timestamps, sizes and payload protocol require a packet sensor.'
+        ),
+    }), 200
+
+
+@app.route('/api/analysis/links', methods=['GET'])
+@login_required
+def api_analysis_links():
+    """Layer-2 neighbours and gateways per device - the basis of node-to-node topology."""
+    conn = get_db()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM network_links ORDER BY device_id, neighbour_ip"
+        ).fetchall()]
+    except sqlite3.OperationalError:
+        rows = []
+    finally:
+        conn.close()
+
+    hosts = {d.get('id'): d.get('hostname', 'Unknown') for d in connected_devices.values()}
+    by_device = {}
+    for r in rows:
+        r['hostname'] = hosts.get(r['device_id'], r['device_id'])
+        by_device.setdefault(r['device_id'], []).append(r)
+
+    # Which neighbours are themselves monitored devices? Those are the only
+    # node-to-node links we can honestly draw - the rest are unmanaged hosts.
+    monitored_ips = {
+        str(d.get('ip') or ''): d.get('hostname', 'Unknown')
+        for d in connected_devices.values() if d.get('ip')
+    }
+    device_links = []
+    for dev_id, links in by_device.items():
+        for link in links:
+            peer = monitored_ips.get(str(link.get('neighbour_ip') or ''))
+            if peer:
+                device_links.append({
+                    'from_device': dev_id,
+                    'from_host': hosts.get(dev_id, dev_id),
+                    'to_ip': link['neighbour_ip'],
+                    'to_host': peer,
+                    'mac': link.get('neighbour_mac') or '',
+                    'interface': link.get('interface') or '',
+                    'state': link.get('state') or '',
+                    'is_gateway': bool(link.get('is_gateway')),
+                })
+
+    return jsonify({
+        'links': rows,
+        'device_to_device': device_links,
+        'total': len(rows),
+        'devices_reporting': len(by_device),
+        'gateways': sorted({
+            str(r.get('neighbour_ip')) for r in rows if r.get('is_gateway') and r.get('neighbour_ip')
+        }),
+        'has_data': bool(rows),
+        'note': (
+            'Neighbours come from ARP and the routing table. Links are drawn only '
+            'between monitored devices; unmanaged hosts are listed but not connected.'
+        ),
     }), 200
 
 

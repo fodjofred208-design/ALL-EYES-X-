@@ -9,6 +9,7 @@ import DeviceIcon from '../components/DeviceIcon';
 import { useDevices } from '../context/DeviceContext';
 import { API_BASE } from '../utils/api';
 import { useReducedMotion } from '../hooks/useReducedMotion';
+import { NodeLinks } from '../components/analysis/NetworkSensors';
 
 /**
  * TOPOLOGY ANALYSIS
@@ -400,32 +401,14 @@ const Topology: React.FC = () => {
         )}
       </AnimatePresence>
 
-      {/* ---------------- PART 2 — device-to-device links ---------------- */}
+      {/* ---------------- PART 2 — device-to-node links ---------------- */}
       <div className="aeyes-inset glass-card p-5">
         <h2 className="aeyes-inset__title text-sm font-orbitron font-bold tracking-[0.18em] text-white uppercase mb-3">
           Node-to-Node Links
         </h2>
-        <div className="rounded-lg border border-dashed border-slate-600/40 bg-slate-900/30 p-5">
-          <p className="text-[10px] font-orbitron uppercase tracking-[0.2em] text-amber-400/90">
-            Status: link sensor not installed
-          </p>
-          <p className="mt-2 text-[11px] font-mono-data text-slate-400 leading-relaxed">
-            Drawing how devices reach each other over ethernet or Wi-Fi needs layer-2 discovery:
-            ARP neighbours, the routing table and the wireless association. The agent collects none
-            of these today, so there is no link data to draw.
-          </p>
-          <p className="mt-3 text-[10px] font-mono-data text-slate-500 leading-relaxed border-t border-white/5 pt-3">
-            <span className="text-green-500/80 uppercase tracking-wider">When available: </span>
-            a per-switch / per-segment topology with real links, detected interface type
-            (ethernet or Wi-Fi), gateway and per-link state.
-            See SENSOR.md section 4.6 for the collectors required
-            (ip neigh, ip route, arp -a, route print, netsh wlan show interfaces).
-          </p>
-          <p className="mt-3 text-[9px] font-orbitron uppercase tracking-[0.2em] text-slate-600">
-            No links are invented here
-          </p>
-        </div>
+        <NodeLinks />
       </div>
+
     </div>
   );
 };
