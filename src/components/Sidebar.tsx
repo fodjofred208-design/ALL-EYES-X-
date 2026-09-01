@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { 
   LayoutDashboard, BarChart3, Monitor, Terminal, ShieldAlert, Cpu, Camera, Share2, MousePointer2,
-  Menu, X, LogOut, Eye, Network } from 'lucide-react';
+  Menu, X, LogOut, Eye } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import NeuralEye from './NeuralEye';
 import DeviceSelector from './DeviceSelector';
@@ -12,7 +12,6 @@ const menuItems = [
   { icon: LayoutDashboard, label: 'Command Center', path: '/' },
   { icon: Cpu, label: 'Devices', path: '/devices' },
   { icon: BarChart3, label: 'Analysis', path: '/analysis' },
-  { icon: Network, label: 'Topology', path: '/topology' },
   { icon: Monitor, label: 'Live Monitor', path: '/live_monitor' },
   { icon: MousePointer2, label: 'Touch Control', path: '/touch_monitor' },
   { icon: Terminal, label: 'Terminal', path: '/terminal' },

@@ -1,5 +1,45 @@
 import React from 'react';
 
+/**
+ * How device icons are drawn. The operator chooses; the choice persists.
+ *  - 'auto':   the OS logo while the device is online, a neutral monitor when
+ *              offline (a device visibly "becomes" its OS when it reports in).
+ *  - 'os':     always the OS logo, dimmed while offline.
+ *  - 'device': always the neutral monitor, whatever the state.
+ */
+export type IconMode = 'auto' | 'os' | 'device';
+
+const ICON_MODE_KEY = 'aeyes.iconMode';
+
+export const getIconMode = (): IconMode => {
+  try {
+    const v = localStorage.getItem(ICON_MODE_KEY);
+    return v === 'os' || v === 'device' ? v : 'auto';
+  } catch {
+    return 'auto';
+  }
+};
+
+export const setIconMode = (mode: IconMode): void => {
+  try {
+    localStorage.setItem(ICON_MODE_KEY, mode);
+  } catch {
+    /* private mode - the choice just won't survive a reload */
+  }
+  window.dispatchEvent(new CustomEvent('aeyes-icon-mode', { detail: mode }));
+};
+
+/** Live icon mode; every DeviceIcon re-renders when the operator switches. */
+export const useIconMode = (): IconMode => {
+  const [mode, setMode] = React.useState<IconMode>(getIconMode);
+  React.useEffect(() => {
+    const on = (e: Event) => setMode(((e as CustomEvent).detail as IconMode) || 'auto');
+    window.addEventListener('aeyes-icon-mode', on);
+    return () => window.removeEventListener('aeyes-icon-mode', on);
+  }, []);
+  return mode;
+};
+
 interface DeviceIconProps {
   hostname?: string;
   os?: string;
@@ -20,6 +60,9 @@ const DeviceIcon: React.FC<DeviceIconProps> = ({
   className = '',
   online = false,
 }) => {
+  const mode = useIconMode();
+  // 'os' forces the logo even offline; 'device' forces the monitor even online.
+  const showOs = mode === 'os' ? true : mode === 'device' ? false : online;
   const combined = (os + ' ' + hostname).toLowerCase();
 
   const isWindows = combined.includes('windows');
@@ -50,8 +93,8 @@ const DeviceIcon: React.FC<DeviceIconProps> = ({
   const isCamera = /camera|webcam|ip cam|reolink|dahua|hikvision|ring/.test(combined);
   const isVm = /virtual|vm\b|vbox|virtualbox|qemu|kvm|docker|container|wsl/.test(combined);
 
-  // Offline (or unknown OS) — neutral monitor.
-  if (!online) {
+  // Offline (or unknown OS), or the operator chose device icons — neutral monitor.
+  if (!showOs) {
     return (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" className={className}>
         <rect x="3" y="3" width="18" height="13" rx="2" stroke="currentColor" strokeWidth="1.5" fill="none" />

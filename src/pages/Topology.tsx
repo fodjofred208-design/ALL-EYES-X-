@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import DeviceIcon from '../components/DeviceIcon';
+import IconModeToggle from '../components/IconModeToggle';
 import { useDevices } from '../context/DeviceContext';
 import { API_BASE } from '../utils/api';
 import { useReducedMotion } from '../hooks/useReducedMotion';
@@ -196,6 +197,7 @@ const Topology: React.FC = () => {
             Network Map
           </h2>
           <div className="flex flex-wrap items-center gap-1.5">
+            <IconModeToggle />
             <button onClick={() => setZoom(z => clampZoom(z + 0.15))} title="Zoom in"
               className="p-2 rounded-lg border border-white/10 text-slate-400 hover:text-green-300 hover:border-green-500/40 transition-all"><ZoomIn size={14} /></button>
             <button onClick={() => setZoom(z => clampZoom(z - 0.15))} title="Zoom out"
@@ -249,6 +251,18 @@ const Topology: React.FC = () => {
               {/* Links: hub -> device. Only real, reporting devices get a live
                   animated link; offline ones get a dim static line. */}
               <svg width={PLANE} height={PLANE} className="absolute inset-0 pointer-events-none">
+                {/* Matrix square grid: the plane reads as a measured floor, and
+                    the perspective transform turns the squares into depth cues. */}
+                <defs>
+                  <pattern id="aeyes-topo-grid" width="44" height="44" patternUnits="userSpaceOnUse">
+                    <path d="M44 0H0V44" fill="none" stroke="rgba(34,197,94,0.14)" strokeWidth="1" />
+                  </pattern>
+                  <pattern id="aeyes-topo-grid-major" width="220" height="220" patternUnits="userSpaceOnUse">
+                    <path d="M220 0H0V220" fill="none" stroke="rgba(34,197,94,0.22)" strokeWidth="1" />
+                  </pattern>
+                </defs>
+                <rect width={PLANE} height={PLANE} fill="url(#aeyes-topo-grid)" />
+                <rect width={PLANE} height={PLANE} fill="url(#aeyes-topo-grid-major)" />
                 {nodes.map(n => (
                   <line
                     key={`link-${n.id}`}
@@ -300,17 +314,21 @@ const Topology: React.FC = () => {
                       }`}
                       style={{ boxShadow: isSel ? `0 0 18px ${color}55` : 'none' }}
                     >
-                      <span className={n.online ? 'text-green-400' : 'text-slate-600'}>
+                      <span className={n.online ? 'text-green-400' : 'text-slate-500'}>
                         <DeviceIcon hostname={n.name} os={n.os} size={22} online={n.online} />
                       </span>
                     </span>
-                    <span className="mt-1 block text-[9px] font-rajdhani text-slate-200 truncate">{n.name}</span>
-                    <span className="block text-[8px] font-mono-data text-slate-500 truncate">{n.ip}</span>
-                    <span className="mt-0.5 inline-flex items-center gap-1">
+                    {/* Labels sit on a dark chip with a shadow so they stay
+                        legible over the grid and the glow of neighbouring nodes. */}
+                    <span className="mt-1 block text-[10px] font-rajdhani font-semibold text-slate-100 truncate rounded bg-[#060812]/80 px-1"
+                      style={{ textShadow: '0 1px 2px rgba(0,0,0,0.9)' }}>{n.name}</span>
+                    <span className="block text-[9px] font-mono-data text-slate-400 truncate rounded bg-[#060812]/80 px-1"
+                      style={{ textShadow: '0 1px 2px rgba(0,0,0,0.9)' }}>{n.ip}</span>
+                    <span className="mt-0.5 inline-flex items-center gap-1 rounded bg-[#060812]/80 px-1">
                       <span className="w-1.5 h-1.5 rounded-full"
-                        style={{ background: n.online ? color : '#475569' }} />
-                      <span className="text-[7px] font-orbitron uppercase tracking-[0.12em]"
-                        style={{ color: n.online ? color : '#64748b' }}>{n.riskLevel}</span>
+                        style={{ background: n.online ? color : '#64748b' }} />
+                      <span className="text-[8px] font-orbitron uppercase tracking-[0.12em]"
+                        style={{ color: n.online ? color : '#94a3b8' }}>{n.riskLevel}</span>
                     </span>
                   </button>
                 );

@@ -429,7 +429,7 @@ def _read_os_release():
     return data
 
 
-def get_os_name():
+def _compute_os_name():
     """Human-readable operating-system identity, distribution included.
 
     Registration used to send capability_profile()['platform'], which is only
@@ -518,6 +518,18 @@ def get_os_name():
     if system:
         return f"{system} {release}".strip()
     return platform.platform()
+
+
+_OS_NAME_CACHE = ''
+
+
+def get_os_name():
+    """Cached _compute_os_name(). The identity cannot change while the agent
+    runs, and heartbeats now carry it every few seconds, so compute once."""
+    global _OS_NAME_CACHE
+    if not _OS_NAME_CACHE:
+        _OS_NAME_CACHE = _compute_os_name() or 'Unknown'
+    return _OS_NAME_CACHE
 
 
 def detect_virtualization():
@@ -3323,6 +3335,13 @@ class ALLEYESXClient:
         payload = {
             'device_id': self.device_id,
             'ip': get_local_ip(),
+            # Identity travels with every heartbeat so a row created by an
+            # older agent (OS 'Unknown') heals while this agent runs, and the
+            # UI can render the OS icon the moment the device is online.
+            'os': get_os_name(),
+            'os_version': platform.platform(),
+            'hostname': (android_model() if is_termux() else None)
+                        or platform.node() or socket.gethostname(),
         }
         payload.update(collect_security_telemetry())
 

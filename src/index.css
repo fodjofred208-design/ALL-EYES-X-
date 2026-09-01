@@ -410,8 +410,8 @@
    ================================================================ */
 .aeyes-title-glow {
   text-shadow:
-    0 0 6px rgba(255, 255, 255, 0.25),
-    0 0 22px rgba(34, 197, 94, 0.35);
+    0 0 8px rgba(255, 255, 255, 0.32),
+    0 0 24px rgba(34, 197, 94, 0.4);
 }
 
 /* ================================================================
@@ -704,3 +704,27 @@
 @media (prefers-reduced-motion: reduce) {
   .aeyes-topo-flow { animation: none !important; }
 }
+
+/* ================================================================
+   READABILITY LAYER — system-wide typography contrast pass.
+   No layout, identity or theme change: only foreground brightness
+   and the smallest font sizes are raised so an operator can read
+   the interface at arm's length. These rules are deliberately
+   unlayered so they override the generated utilities (Tailwind v4
+   emits them inside cascade layers; unlayered CSS wins).
+   Ladder: primary #e5e7eb - secondary #94a3b8 - metadata #64748b -
+   ALL EYES X green #22c55e. Hierarchy is preserved: every rung is
+   lifted one step, nothing is flattened to one colour.
+   ================================================================ */
+.text-slate-600 { color: #64748b; }
+.text-slate-500 { color: #94a3b8; }
+.text-slate-400 { color: #aab8ca; }
+
+/* Microscopic type is the other half of the complaint. One pixel up. */
+.text-\[7px\]  { font-size: 8px; }
+.text-\[8px\]  { font-size: 9px; }
+.text-\[9px\]  { font-size: 10px; }
+.text-\[10px\] { font-size: 11px; }
+
+/* Explanatory paragraphs breathe instead of compressing. */
+p.text-slate-500, p.text-slate-600, p.text-slate-400 { line-height: 1.6; }

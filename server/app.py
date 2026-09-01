@@ -858,7 +858,13 @@ def load_devices_from_db():
     conn.close()
     result = {}
     for row in rows:
-        result[row['id']] = dict(row)
+        dev = dict(row)
+        # Register-built cache entries carry 'os'; DB rows carry the column
+        # name 'os_name'. Keep both spellings populated so every reader and
+        # every save_device_to_db() sees the same identity.
+        dev.setdefault('os', dev.get('os_name') or 'Unknown')
+        dev.setdefault('os_name', dev.get('os') or 'Unknown')
+        result[row['id']] = dev
     return result
 
 # Hardware identifiers that should never change on a machine nobody touched.
@@ -973,6 +979,17 @@ def save_device_extras(device_id, device_info):
         conn.close()
 
 
+def _device_os_name(device_info):
+    """The OS label for a device row, tolerating both cache key spellings.
+
+    Register builds cache entries with an 'os' key while load_devices_from_db()
+    produces them with the column name 'os_name'. Reading only 'os' made every
+    heartbeat after a server restart persist os_name='Unknown' over a perfectly
+    good identity - the device then displayed as Unknown forever. Accept both.
+    """
+    return device_info.get('os') or device_info.get('os_name') or 'Unknown'
+
+
 def save_device_to_db(device_info):
     conn = get_db()
     existing = conn.execute("SELECT id FROM devices WHERE id=?", (device_info['id'],)).fetchone()
@@ -987,7 +1004,7 @@ def save_device_to_db(device_info):
         """, (
             device_info.get('hostname', 'Unknown'),
             device_info.get('ip', '0.0.0.0'),
-            device_info.get('os', 'Unknown'),
+            _device_os_name(device_info),
             device_info.get('os_version', ''),
             device_info.get('cpu', 'Unknown'),
             device_info.get('ram', 'Unknown'),
@@ -1015,7 +1032,7 @@ def save_device_to_db(device_info):
             device_info.get('id'),
             device_info.get('hostname', 'Unknown'),
             device_info.get('ip', '0.0.0.0'),
-            device_info.get('os', 'Unknown'),
+            _device_os_name(device_info),
             device_info.get('os_version', ''),
             device_info.get('cpu', 'Unknown'),
             device_info.get('ram', 'Unknown'),
@@ -1393,6 +1410,83 @@ def persist_telemetry(device_id, data):
 connected_devices = load_devices_from_db()
 connected_clients_sid = {}
 pending_tasks_queue = {}
+
+# Heartbeats arrive every ~5s and the reaper declares offline after 30s, so a
+# last_seen newer than this window means some process is hearing from the agent
+# right now - even when that process is not this one.
+ONLINE_FRESHNESS_SECONDS = 45
+
+
+def _parse_local_iso(ts):
+    """Parse an ISO timestamp written by this codebase; None when impossible."""
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt
+
+
+def heal_statuses_from_db():
+    """Adopt 'online' for devices another server process is hearing from.
+
+    connected_devices is per-process. With more than one worker sharing the
+    database (a WSGI pool behind Caddy, a leftover instance, the debug
+    reloader's parent), a process that receives no heartbeats would otherwise
+    show a device OFFLINE while the machine is plainly reporting to a sibling
+    process - exactly the "my machine is online but the page says offline"
+    failure. The database is the shared witness: every heartbeat updates
+    last_seen, so a fresh last_seen plus status='online' in the table is proof
+    of life this process did not see itself. Adopting it fabricates nothing.
+    """
+    now = datetime.now()
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, last_seen FROM devices WHERE deleted=0 AND status='online'"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    finally:
+        conn.close()
+
+    healed = 0
+    for row in rows:
+        dt = _parse_local_iso(row['last_seen'])
+        if not dt or (now - dt).total_seconds() > ONLINE_FRESHNESS_SECONDS:
+            continue
+        dev = connected_devices.get(row['id'])
+        if dev and str(dev.get('status', '')).lower() != 'online':
+            dev['status'] = 'online'
+            dev['last_seen'] = row['last_seen']
+            healed += 1
+    return healed
+
+
+def db_fresh_last_seen(device_id, now=None, window=None):
+    """The DB last_seen for this device when a heartbeat landed within window,
+    else None. The shared table is the only witness every server process can
+    see, so it arbitrates liveness disputes between processes."""
+    now = now or datetime.now()
+    window = window if window is not None else ONLINE_FRESHNESS_SECONDS
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT last_seen FROM devices WHERE id=? AND deleted=0", (device_id,)
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    dt = _parse_local_iso(row['last_seen'])
+    if not dt or (now - dt).total_seconds() > window:
+        return None
+    return row['last_seen']
 security_unlock_until = {}  # client_ip -> unix timestamp after successful recovery phrase
 _offline_notified = {}      # device_id -> unix ts of last offline notification
 # Do not re-notify the same offline device more than once per this many seconds.
@@ -1768,7 +1862,10 @@ def api_register():
             'agent_version': agent_version,
             'hostname': hostname,
             'ip': ip,
+            # Both spellings, always: cache readers use either key and an
+            # update() that only carried 'os' left a stale 'os_name' winning.
             'os': os_name,
+            'os_name': os_name,
             'os_version': os_version,
             'cpu': cpu,
             'ram': ram,
@@ -1976,6 +2073,9 @@ def get_inventory_completeness(device_ids):
 
 
 def get_device_list_for_dashboard():
+    # A sibling worker may be the one receiving heartbeats; align this process
+    # with the shared DB before any status is shown or counted.
+    heal_statuses_from_db()
     devices_list = []
     device_ids = list(connected_devices.keys())
     alerts_by_device = get_alerts_grouped(device_ids)
@@ -3478,10 +3578,22 @@ def api_heartbeat():
             }), 200
 
         now_iso = datetime.now().isoformat()
-        connected_devices[device_id]['last_seen'] = now_iso
-        connected_devices[device_id]['status'] = 'online'
-        connected_devices[device_id]['ip'] = data.get('ip', connected_devices[device_id]['ip'])
-        save_device_to_db(connected_devices[device_id])
+        dev = connected_devices[device_id]
+        dev['last_seen'] = now_iso
+        dev['status'] = 'online'
+        dev['ip'] = data.get('ip', dev.get('ip'))
+        # The agent is the authority on its own identity. Heartbeats carry the
+        # OS label so rows created by older agents (os_name='Unknown') heal
+        # while the agent runs, without waiting for a re-register. Hostname is
+        # only filled when absent - renames are announced at registration.
+        if data.get('os'):
+            dev['os'] = data['os']
+            dev['os_name'] = data['os']
+        if data.get('os_version'):
+            dev['os_version'] = data['os_version']
+        if data.get('hostname') and dev.get('hostname') in (None, '', 'Unknown'):
+            dev['hostname'] = data['hostname']
+        save_device_to_db(dev)
         persist_telemetry(device_id, data)
         activity('HEARTBEAT', device_id=device_id[:8], host=connected_devices[device_id].get('hostname'), cpu=data.get('cpu'), ram=data.get('ram'), tasks=len(pending_tasks_queue.get(device_id, [])))
 
@@ -4902,6 +5014,7 @@ def _risk_inputs():
 @login_required
 def api_analysis_devices():
     """Per-device risk ranking with the evidence behind every score."""
+    heal_statuses_from_db()
     telemetry_by_device, alerts_by_device = _risk_inputs()
     only = (request.args.get('device_id') or '').strip() or None
 
@@ -4948,6 +5061,7 @@ def api_analysis_endpoints():
     fields are omitted rather than defaulted, so the UI can say "not reported"
     instead of showing a misleading zero.
     """
+    heal_statuses_from_db()
     ids = list(connected_devices.keys())
     tel = _telemetry_rows_for(ids)
     only = (request.args.get('device_id') or '').strip() or None
@@ -7196,9 +7310,19 @@ def cleanup_offline_devices():
             last_seen = dev.get('last_seen', '')
             if last_seen:
                 try:
-                    dt = datetime.fromisoformat(last_seen)
-                    elapsed = (now - dt).total_seconds()
-                    if elapsed > 30 and dev['status'] == 'online':
+                    dt = _parse_local_iso(last_seen)
+                    elapsed = (now - dt).total_seconds() if dt else None
+                    if elapsed is not None and elapsed > 30 and dev['status'] == 'online':
+                        # Another process may be receiving this agent's
+                        # heartbeats (worker pool, reloader parent). The shared
+                        # DB is the witness: if last_seen there is fresh, the
+                        # device is alive and this process must heal its copy
+                        # instead of stamping 'offline' over the truth.
+                        fresh_ts = db_fresh_last_seen(dev_id, now=now)
+                        if fresh_ts:
+                            dev['status'] = 'online'
+                            dev['last_seen'] = fresh_ts
+                            continue
                         dev['status'] = 'offline'
                         save_device_to_db(dev)
                         # Notify once per device per cooldown window. Without this a

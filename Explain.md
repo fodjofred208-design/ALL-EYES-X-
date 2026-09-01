@@ -57,6 +57,17 @@ with the heartbeat, a slow upload could delay the heartbeat past the server's 30
 second offline threshold and the device would flap offline. Keeping them apart
 means a slow frame upload can never make a device look offline.
 
+Heartbeats also carry the agent's identity (`os`, `os_version`, `hostname`), so a
+device row created by an older agent that reported no OS heals to the real OS
+label while the agent runs, without waiting for a re-register. And because
+`connected_devices` is a per-process cache, every reader first consults the
+shared database: a `last_seen` fresher than 45s with `status='online'` in the
+table proves some worker is hearing from that agent, so a worker that receives
+no heartbeats (a WSGI pool behind Caddy, the debug reloader's parent) adopts
+`online` instead of showing a live machine as offline. The offline reaper makes
+the same check before it ever stamps `offline`, so two processes can no longer
+fight over a device's status.
+
 A stale frame is worthless by the time a retry would land, so the bulk channel does
 not retry at all.
 
@@ -69,7 +80,7 @@ throttled without editing code.
 
 | Collector | Interval | Env var | What it reads |
 |---|---|---|---|
-| Heartbeat | 5s | `HEARTBEAT_INTERVAL` | liveness, cpu, ram, disk, ports, firewall, antivirus, malware, processes |
+| Heartbeat | 5s | `HEARTBEAT_INTERVAL` | liveness, OS identity (os/os_version/hostname), cpu, ram, disk, ports, firewall, antivirus, malware, processes |
 | Screenshot | 1/49.5s | `ALLEYESX_SCREENSHOT_INTERVAL` | display capture, dirty-rectangle diffed |
 | Webcam | 1/49.5s | `ALLEYESX_WEBCAM_INTERVAL` | camera frame, opt-in only |
 | Touch poll | 0.5s | `ALLEYESX_TOUCH_POLL_INTERVAL` | inbound control events |
@@ -339,13 +350,18 @@ deviation and making the very deviation being sought harder to see. Measured wit
 ## 5. The Analysis page
 
 Six categories, each an inset panel with a summary and an expandable workspace.
+The interactive network topology map is reached from Topology Analysis >
+Network Topology (it is deliberately not a sidebar entry). Device icons
+render the OS logo while a device is online; the operator chooses the
+drawing mode (Auto / OS / Device) on the Devices page and the topology
+toolbar, persisted in localStorage.
 
 | # | Category | Modules |
 |---|---|---|
 | 01 | Devices Analysis | Device Risk Ranking, USB Activity, Network Discovery, Device Deep Dive, Fleet Composition |
 | 02 | Port Analysis | Nmap Scanner, Open Port Monitor, Attack Surface |
 | 03 | Traffic Analysis | Protocol Statistics, Top Talkers, Live Connection Analysis |
-| 04 | Topology Analysis | Network Map, Node-to-Node Links |
+| 04 | Topology Analysis | Network Topology (opens the /topology map), Threat Geography |
 | 05 | Malware Analysis | Malware Behaviour, IOC Detection, Firewall Analysis, AI Security Advisor |
 | 06 | Log Analysis | Session Monitoring, Log Analyzer, Sigma Detection, Anomaly Detection |
 

@@ -24,14 +24,14 @@ const LEVEL_COLOR: Record<string, string> = {
 };
 
 export const Th: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
-  <th className={`py-2 pr-3 text-left text-[8px] font-orbitron uppercase tracking-[0.16em] text-slate-500 ${className}`}>
+  <th className={`py-2 pr-3 text-left text-[10px] font-orbitron uppercase tracking-[0.16em] text-slate-400 ${className}`}>
     {children}
   </th>
 );
 
 export const EmptyRow: React.FC<{ cols: number; message: string }> = ({ cols, message }) => (
   <tr>
-    <td colSpan={cols} className="py-6 text-center text-[10px] font-mono-data text-slate-600">
+    <td colSpan={cols} className="py-6 text-center text-[10px] font-mono-data text-slate-500">
       {message}
     </td>
   </tr>
@@ -78,22 +78,22 @@ export const RiskRankingModule: React.FC<{ devices: any[] }> = ({ devices }) => 
                 key={d.device_id}
                 onClick={() => navigate(`/device/${d.device_id}`)}
                 title={`Risk ${d.risk_score} - ${d.risk_level}\n\n${why}`}
-                className="border-b border-white/5 cursor-pointer hover:bg-white/5 transition-colors"
+                className="border-b border-white/5 cursor-pointer hover:bg-white/[0.07] transition-colors"
               >
-                <td className="py-2 pr-3 text-[11px] font-rajdhani text-slate-200">{d.hostname}</td>
+                <td className="py-2 pr-3 text-[11px] font-rajdhani font-semibold text-slate-100">{d.hostname}</td>
                 <td className="py-2 pr-3 text-[10px] font-mono-data text-slate-400">{d.os_name}</td>
                 <td className="py-2 pr-3">
-                  <span className={`text-[9px] font-orbitron ${d.status === 'online' ? 'text-green-500' : 'text-slate-500'}`}>
+                  <span className={`text-[10px] font-orbitron ${d.status === 'online' ? 'text-green-400' : 'text-slate-400'}`}>
                     {String(d.status).toUpperCase()}
                   </span>
                 </td>
                 <td className="py-2 pr-3">
                   <div className="flex items-center gap-2">
-                    <div className="w-16 h-1 bg-white/5 rounded-full overflow-hidden">
+                    <div className="w-16 h-1.5 bg-white/10 rounded-full overflow-hidden">
                       <div className="h-full transition-all duration-700"
-                        style={{ width: `${d.risk_score}%`, backgroundColor: color }} />
+                        style={{ width: `${d.risk_score}%`, backgroundColor: color, boxShadow: `0 0 6px ${color}88` }} />
                     </div>
-                    <span className="text-[10px] font-mono-data text-slate-300">{d.risk_score}</span>
+                    <span className="text-[11px] font-mono-data text-slate-100">{d.risk_score}</span>
                   </div>
                 </td>
                 <td className="py-2 pr-3">
@@ -147,7 +147,7 @@ export const OpenPortsModule: React.FC<{ devices: any[] }> = ({ devices }) => {
             <tr key={`${r.device_id}-${r.port}-${i}`} className="border-b border-white/5">
               <td className="py-1.5 pr-3 text-[11px] font-mono-data text-slate-200">{r.port}</td>
               <td className="py-1.5 pr-3 text-[10px] font-mono-data text-slate-400">
-                {r.service ?? <span className="text-slate-600">not in known-service map</span>}
+                {r.service ?? <span className="text-slate-500">not in known-service map</span>}
               </td>
               <td className="py-1.5 pr-3 text-[10px] font-mono-data text-slate-400">{r.device}</td>
               <td className="py-1.5">
@@ -217,7 +217,7 @@ export const EndpointSecurityModule: React.FC<{ devices: any[] }> = ({ devices }
         <tbody>
           {rows.map(d => {
             const tri = (v: number) =>
-              v === 1 ? ['ENABLED', 'text-green-400'] : v === 0 ? ['DISABLED', 'text-red-400'] : ['NOT REPORTED', 'text-slate-600'];
+              v === 1 ? ['ENABLED', 'text-green-400'] : v === 0 ? ['DISABLED', 'text-red-400'] : ['NOT REPORTED', 'text-slate-500'];
             const [fw, fwc] = tri(d.firewall);
             const [av, avc] = tri(d.antivirus);
             const [enc, encc] = tri(d.encrypted_disk);
@@ -239,12 +239,12 @@ export const EndpointSecurityModule: React.FC<{ devices: any[] }> = ({ devices }
                 <td className="py-2 pr-3 text-[10px] font-mono-data">
                   {susp.length
                     ? <span className="text-amber-300">{susp.map((x: any) => (x?.name ?? String(x))).join(', ')}</span>
-                    : <span className="text-slate-600">none reported</span>}
+                    : <span className="text-slate-500">none reported</span>}
                 </td>
                 <td className="py-2 text-[10px] font-mono-data">
                   {usb.length
                     ? <span className="text-slate-300">{usb.length} attached</span>
-                    : <span className="text-slate-600">none reported</span>}
+                    : <span className="text-slate-500">none reported</span>}
                 </td>
               </tr>
             );
@@ -461,7 +461,7 @@ export const FleetCompositionModule: React.FC<{ analytics: any }> = ({ analytics
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
       <div className="rounded-md border border-white/5 bg-slate-900/30 p-3">
-        <p className="text-[9px] font-orbitron uppercase tracking-[0.16em] text-slate-500 mb-2">
+        <p className="text-[9px] font-orbitron uppercase tracking-[0.16em] text-slate-400 mb-2">
           Activity - Last 24 Hours
         </p>
         <div className="h-[150px]">
@@ -478,7 +478,7 @@ export const FleetCompositionModule: React.FC<{ analytics: any }> = ({ analytics
       </div>
 
       <div className="rounded-md border border-white/5 bg-slate-900/30 p-3">
-        <p className="text-[9px] font-orbitron uppercase tracking-[0.16em] text-slate-500 mb-2">
+        <p className="text-[9px] font-orbitron uppercase tracking-[0.16em] text-slate-400 mb-2">
           OS Distribution
         </p>
         <div className="h-[150px]">
@@ -499,7 +499,7 @@ export const FleetCompositionModule: React.FC<{ analytics: any }> = ({ analytics
       </div>
 
       <div className="rounded-md border border-white/5 bg-slate-900/30 p-3">
-        <p className="text-[9px] font-orbitron uppercase tracking-[0.16em] text-slate-500 mb-2">
+        <p className="text-[9px] font-orbitron uppercase tracking-[0.16em] text-slate-400 mb-2">
           Devices by Country
         </p>
         <div className="h-[150px]">

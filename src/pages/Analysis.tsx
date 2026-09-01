@@ -340,8 +340,8 @@ const Analysis: React.FC = () => {
               never rotates. No data is implied by this animation. */}
           <span className="aeyes-topo-rings" aria-hidden="true" />
           <div className="relative">
-        <ReuseLink to="/" icon={<Map size={14} />} label="Network Topology"
-          note="The interactive topology map lives on the Command Center and is reused here rather than rebuilt. Infrastructure nodes (routers, switches, gateway) are not discovered - no ARP, routing-table or LLDP collection - so links between hosts are not drawn." />
+        <ReuseLink to="/topology" icon={<Map size={14} />} label="Network Topology"
+          note="Opens the interactive network topology map directly. Infrastructure nodes (routers, switches, gateway) are not discovered - no ARP, routing-table or LLDP collection - so links between hosts are not drawn." />
           </div>
         </div>
         <div>

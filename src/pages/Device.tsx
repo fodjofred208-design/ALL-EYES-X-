@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useDevices } from '../context/DeviceContext';
 import DeviceRow from '../components/DeviceRow';
 import DeviceIcon from '../components/DeviceIcon';
+import IconModeToggle from '../components/IconModeToggle';
 import {
   sortDevices,
   defaultSortDir,
@@ -177,6 +178,7 @@ const Devices: React.FC = () => {
             </button>
           ))}
         </div>
+        <IconModeToggle />
       </div>
 
       {actionMsg && (

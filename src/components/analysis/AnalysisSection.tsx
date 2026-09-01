@@ -78,14 +78,14 @@ const AnalysisSection: React.FC<Props> = ({
         className="w-full text-left px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-4 group"
       >
         <div className="flex items-center gap-3 min-w-0 flex-1">
-          <span className="text-[10px] font-orbitron tracking-[0.2em] text-green-500/70 shrink-0">
+          <span className="text-[10px] font-orbitron tracking-[0.2em] text-green-400 shrink-0">
             {category.index}
           </span>
           <div className="min-w-0">
             <h2 className="aeyes-inset__title text-base md:text-lg font-orbitron font-bold tracking-[0.18em] text-white uppercase truncate">
               {category.title}
             </h2>
-            <p className="text-[10px] font-mono-data text-slate-500 truncate">
+            <p className="text-[10px] font-mono-data text-slate-400 truncate">
               {category.subtitle}
             </p>
           </div>
@@ -96,7 +96,7 @@ const AnalysisSection: React.FC<Props> = ({
             className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-[8px] font-orbitron uppercase tracking-[0.18em] border ${
               live
                 ? 'text-green-400 border-green-500/30 bg-green-500/10'
-                : 'text-slate-500 border-slate-600/30 bg-slate-800/40'
+                : 'text-slate-400 border-slate-600/40 bg-slate-800/40'
             }`}
           >
             {live ? (
@@ -108,7 +108,7 @@ const AnalysisSection: React.FC<Props> = ({
           </span>
           <ChevronRight
             size={16}
-            className={`aeyes-inset__arrow text-slate-500 group-hover:text-green-400 ${
+            className={`aeyes-inset__arrow text-slate-400 group-hover:text-green-400 ${
               open ? 'rotate-90' : ''
             }`}
           />
@@ -120,7 +120,7 @@ const AnalysisSection: React.FC<Props> = ({
         <div className="px-5 pb-4 grid grid-cols-2 md:grid-cols-4 gap-3">
           {stats.map(s => (
             <div key={s.label} className="aeyes-stat rounded-md border border-white/5 bg-slate-900/30 px-3 py-2">
-              <p className="text-[8px] font-orbitron uppercase tracking-[0.16em] text-slate-500">
+              <p className="text-[8px] font-orbitron uppercase tracking-[0.16em] text-slate-400">
                 {s.label}
               </p>
               <p className={`aeyes-stat__value text-lg font-mono-data ${TONE[s.tone ?? 'neutral']}`}>{s.value}</p>
