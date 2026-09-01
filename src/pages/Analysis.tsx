@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Search, ExternalLink, Map, Radar } from 'lucide-react';
-import BackButton from '../components/BackButton';
+import PageHeader from '../components/PageHeader';
 import { useDevices } from '../context/DeviceContext';
 import { useDashboard } from '../context/DashboardContext';
 import { usePolling } from '../hooks/usePolling';
@@ -17,6 +17,7 @@ import {
 } from '../components/analysis/capabilities';
 import NmapScanner from '../components/analysis/NmapScanner';
 import NetworkDiscovery from '../components/analysis/NetworkDiscovery';
+import DeviceDeepDive from '../components/analysis/DeviceDeepDive';
 import {
   RiskRankingModule,
   OpenPortsModule,
@@ -178,17 +179,12 @@ const Analysis: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* ---------------- HEADER ---------------- */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div>
-          <BackButton />
-          <h1 className="text-3xl md:text-4xl font-orbitron font-bold tracking-[0.28em] text-white aeyes-title-glow">
-            ANALYSIS
-          </h1>
-          <p className="text-[11px] font-mono-data text-slate-500 mt-1">
-            Advanced Network &amp; Security Intelligence
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
+      <PageHeader
+        size="hero"
+        hideBack
+        title="ANALYSIS"
+        subtitle="Advanced Network & Security Intelligence"
+        right={
           <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-[9px] font-orbitron uppercase tracking-[0.18em] ${
             error ? 'border-red-500/30 text-red-400 bg-red-500/10'
                   : 'border-green-500/25 text-green-400 bg-green-500/[0.07]'}`}>
@@ -197,8 +193,8 @@ const Analysis: React.FC = () => {
               animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 2, repeat: Infinity }} />
             {error ? 'ANALYSIS ENGINE UNAVAILABLE' : 'LIVE'}
           </span>
-        </div>
-      </div>
+        }
+      />
 
       {/* ---------------- FILTER BAR ---------------- */}
       <div className="glass-card px-4 py-3 flex flex-col md:flex-row md:items-center gap-3">
@@ -254,6 +250,12 @@ const Analysis: React.FC = () => {
         </div>
         <div>
           <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
+            Device Deep Dive · per-device charts · Live / Current State
+          </h3>
+          <DeviceDeepDive devices={devices} />
+        </div>
+        <div>
+          <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
             Fleet Composition · Activity, OS and location
           </h3>
           <FleetCompositionModule analytics={analytics} />
@@ -296,11 +298,15 @@ const Analysis: React.FC = () => {
       {/* ---------------- 03 TRAFFIC ---------------- */}
       <AnalysisSection category={cat('traffic')} stats={trafficStats}
         state="PARTIAL — PACKET SENSOR OFFLINE" live={!error}>
-        <div>
-          <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
-            Protocol Statistics · Listening Services
-          </h3>
-          <ProtocolStatistics protocols={protocols} />
+        <div className="relative overflow-hidden rounded-lg">
+          {/* Decorative data-flow grid. Values below still come from the API. */}
+          <span className="aeyes-traffic-grid" aria-hidden="true" />
+          <div className="relative">
+            <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
+              Protocol Statistics · Listening Services
+            </h3>
+            <ProtocolStatistics protocols={protocols} />
+          </div>
         </div>
         <div>
           <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
@@ -322,8 +328,15 @@ const Analysis: React.FC = () => {
         { label: 'Online', value: devices.filter(d => d.status === 'online').length, tone: 'low' },
         { label: 'Infrastructure Map', value: 'PARTIAL', tone: 'medium' },
       ]} state="PARTIAL — NO ATTACK GEOGRAPHY" live={!error}>
+        <div className="relative overflow-hidden rounded-lg">
+          {/* Decorative radar rings, contained inside the panel. The panel itself
+              never rotates. No data is implied by this animation. */}
+          <span className="aeyes-topo-rings" aria-hidden="true" />
+          <div className="relative">
         <ReuseLink to="/" icon={<Map size={14} />} label="Network Topology"
           note="The interactive topology map lives on the Command Center and is reused here rather than rebuilt. Infrastructure nodes (routers, switches, gateway) are not discovered - no ARP, routing-table or LLDP collection - so links between hosts are not drawn." />
+          </div>
+        </div>
         <div>
           <h3 className="text-[10px] font-orbitron uppercase tracking-[0.18em] text-slate-400 mb-2">
             Threat Heat Map

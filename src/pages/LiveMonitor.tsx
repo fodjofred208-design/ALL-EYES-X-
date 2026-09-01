@@ -291,9 +291,10 @@ const LiveMonitor = () => {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <BackButton />
-          <h1 className="text-3xl font-bold font-orbitron tracking-tight text-white uppercase">
+          <h1 className="text-3xl md:text-4xl font-orbitron font-bold tracking-[0.28em] text-white aeyes-title-glow uppercase">
             Live <span className="text-green-500">Surveillance</span>
           </h1>
+          <div className="aeyes-divider mt-2 w-56 md:w-80" />
           <p className="text-slate-400 font-rajdhani text-xs tracking-widest mt-1 uppercase">
             ALL EYES X Adaptive Neural Streaming — Change-Aware Frame Engine
           </p>

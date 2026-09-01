@@ -266,9 +266,10 @@ const Terminal = () => {
              <TerminalIcon size={20} className="text-green-500" />
           </div>
           <BackButton />
-          <h1 className="text-2xl font-bold font-orbitron tracking-tight text-white uppercase">
+          <h1 className="text-3xl md:text-4xl font-orbitron font-bold tracking-[0.28em] text-white aeyes-title-glow uppercase">
             Control <span className="text-green-500">Terminal</span>
           </h1>
+          <div className="aeyes-divider mt-2 w-56 md:w-80" />
         </div>
         <div className="flex gap-4 items-center">
            <button

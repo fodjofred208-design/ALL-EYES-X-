@@ -462,3 +462,237 @@
 .aeyes-card--compact .aeyes-card__body {
   min-height: 0;
 }
+
+/* ================================================================
+   ANALYSIS WORKSPACE — inset panels, HUD detail, staggered scan
+   ----------------------------------------------------------------
+   Extends the existing theme; introduces no new palette. Decorative
+   animation uses transform/opacity only so it stays cheap on a modest
+   box, and everything is disabled under prefers-reduced-motion.
+   ================================================================ */
+
+.aeyes-inset {
+  position: relative;
+  isolation: isolate;
+  transition:
+    transform 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 300ms ease;
+  box-shadow: 0 0 20px rgba(34, 197, 94, 0.05);
+}
+
+/* Wake up on hover: a small rise, no jump. */
+@media (hover: hover) {
+  .aeyes-inset:hover {
+    transform: translateY(-2px) scale(1.005);
+    border-color: rgba(34, 197, 94, 0.28);
+    box-shadow: 0 0 30px rgba(34, 197, 94, 0.10);
+  }
+  .aeyes-inset:hover .aeyes-inset__title { color: #fff; }
+  .aeyes-inset:hover .aeyes-inset__arrow { transform: translateX(4px); opacity: 1; }
+  .aeyes-inset:hover .aeyes-inset__sweep { opacity: 1; }
+}
+
+.aeyes-inset__title { transition: color 250ms ease; }
+.aeyes-inset__arrow {
+  transition: transform 250ms cubic-bezier(0.22, 1, 0.36, 1), opacity 250ms ease;
+  opacity: 0.55;
+}
+
+/* Internal light sweep — horizontal, very low alpha, never obscures text. */
+.aeyes-inset__sweep {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  overflow: hidden;
+  transition: opacity 300ms ease;
+  z-index: 0;
+}
+.aeyes-inset__sweep::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -60%;
+  width: 45%;
+  background: linear-gradient(90deg, transparent, rgba(34, 197, 94, 0.08), transparent);
+  animation: aeyes-sweep 5.5s ease-in-out infinite;
+}
+@keyframes aeyes-sweep {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(340%); }
+}
+
+/* Travelling border signal: a short green gradient riding the perimeter. */
+.aeyes-inset__edge {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 350ms ease;
+  z-index: 0;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    transparent 300deg,
+    rgba(34, 197, 94, 0.45) 345deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  padding: 1px;
+  animation: aeyes-edge 9s linear infinite;
+}
+@keyframes aeyes-edge { to { transform: rotate(360deg); } }
+@media (hover: hover) {
+  .aeyes-inset:hover .aeyes-inset__edge { opacity: 1; }
+}
+
+/* HUD corner marks. */
+.aeyes-inset__corner {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
+  opacity: 0.22;
+  transition: opacity 300ms ease;
+  z-index: 1;
+}
+.aeyes-inset:hover .aeyes-inset__corner { opacity: 0.5; }
+.aeyes-inset__corner--tl { top: 6px;    left: 6px;    border-top: 1px solid #22c55e; border-left: 1px solid #22c55e; }
+.aeyes-inset__corner--tr { top: 6px;    right: 6px;   border-top: 1px solid #22c55e; border-right: 1px solid #22c55e; }
+.aeyes-inset__corner--bl { bottom: 6px; left: 6px;    border-bottom: 1px solid #22c55e; border-left: 1px solid #22c55e; }
+.aeyes-inset__corner--br { bottom: 6px; right: 6px;   border-bottom: 1px solid #22c55e; border-right: 1px solid #22c55e; }
+
+/* Statistic cards inside a category. */
+.aeyes-stat {
+  transition: background-color 250ms ease, border-color 250ms ease, box-shadow 250ms ease;
+}
+.aeyes-stat__value { transition: filter 250ms ease; }
+@media (hover: hover) {
+  .aeyes-stat:hover {
+    background-color: rgba(34, 197, 94, 0.05);
+    border-color: rgba(34, 197, 94, 0.30);
+    box-shadow: 0 0 18px rgba(34, 197, 94, 0.07);
+  }
+  .aeyes-stat:hover .aeyes-stat__value { filter: brightness(1.18); }
+}
+
+/* Live status dot: glow + slight expansion, ~2s, infinite. */
+.aeyes-live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: #22c55e;
+  animation: aeyes-live 2s ease-in-out infinite;
+}
+.aeyes-live-dot--warn { background: #eab308; animation-duration: 2.6s; }
+@keyframes aeyes-live {
+  0%, 100% { transform: scale(1);    box-shadow: 0 0 0 rgba(34, 197, 94, 0.0); opacity: 1; }
+  50%      { transform: scale(1.35); box-shadow: 0 0 8px rgba(34, 197, 94, 0.75); opacity: 0.7; }
+}
+
+/* Staggered scan line inside an active panel. Delay is set per category inline
+   so modules do not all scan in lockstep. */
+.aeyes-panel-scan {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 0;
+  background: linear-gradient(90deg, transparent, rgba(34, 197, 94, 0.35), transparent);
+  animation: aeyes-panel-scan 11s ease-in-out infinite;
+}
+@keyframes aeyes-panel-scan {
+  0%   { transform: translateY(0);      opacity: 0; }
+  8%   { opacity: 0.55; }
+  45%  { opacity: 0.55; }
+  55%  { transform: translateY(var(--aeyes-scan-h, 240px)); opacity: 0; }
+  100% { transform: translateY(var(--aeyes-scan-h, 240px)); opacity: 0; }
+}
+
+/* Topology preview: slow rotating rings, contained inside the panel. */
+.aeyes-topo-rings {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.35;
+  overflow: hidden;
+}
+.aeyes-topo-rings::before,
+.aeyes-topo-rings::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 9999px;
+  border: 1px solid rgba(34, 197, 94, 0.16);
+}
+.aeyes-topo-rings::before {
+  width: 180px; height: 180px;
+  margin: -90px 0 0 -90px;
+  border-top-color: rgba(34, 197, 94, 0.5);
+  animation: aeyes-spin 14s linear infinite;
+}
+.aeyes-topo-rings::after {
+  width: 300px; height: 300px;
+  margin: -150px 0 0 -150px;
+  border-left-color: rgba(34, 197, 94, 0.32);
+  animation: aeyes-spin 26s linear infinite reverse;
+}
+@keyframes aeyes-spin { to { transform: rotate(360deg); } }
+
+/* Traffic preview: faint drifting grid, decorative only. */
+.aeyes-traffic-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.16;
+  background-image:
+    linear-gradient(rgba(34, 197, 94, 0.10) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34, 197, 94, 0.10) 1px, transparent 1px);
+  background-size: 28px 28px;
+  animation: aeyes-drift 18s linear infinite;
+}
+@keyframes aeyes-drift { to { transform: translate3d(28px, 28px, 0); } }
+
+/* Value changed: brief brighten + tiny scale, no panel-wide flash. */
+.aeyes-value-tick { animation: aeyes-value-tick 320ms ease-out; }
+@keyframes aeyes-value-tick {
+  0%   { filter: brightness(1.5); transform: scale(0.98); }
+  100% { filter: brightness(1);   transform: scale(1); }
+}
+
+/* Section entrance on scroll. */
+.aeyes-section-in {
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 500ms ease, transform 500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.aeyes-section-in.is-visible { opacity: 1; transform: none; }
+
+/* ---------- reduced motion: drop every decorative animation above ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .aeyes-inset,
+  .aeyes-inset:hover { transform: none; }
+  .aeyes-inset__sweep,
+  .aeyes-inset__edge,
+  .aeyes-panel-scan,
+  .aeyes-topo-rings::before,
+  .aeyes-topo-rings::after,
+  .aeyes-traffic-grid,
+  .aeyes-live-dot,
+  .aeyes-value-tick { animation: none !important; }
+  .aeyes-inset__edge,
+  .aeyes-inset__sweep,
+  .aeyes-panel-scan { opacity: 0 !important; }
+  .aeyes-section-in { opacity: 1; transform: none; transition: none; }
+}

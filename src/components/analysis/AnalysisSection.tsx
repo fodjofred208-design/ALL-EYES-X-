@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, Radio } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import type { AnalysisCategory } from './capabilities';
 
 export interface SummaryStat {
@@ -9,6 +9,12 @@ export interface SummaryStat {
   /** Severity colour, only where it carries meaning. */
   tone?: 'neutral' | 'low' | 'medium' | 'high' | 'critical';
 }
+
+// Staggered so modules do not scan in lockstep - it reads as independent
+// monitoring rather than one animation copied six times.
+const SCAN_DELAY: Record<string, number> = {
+  devices: 0, ports: 1, traffic: 2, topology: 3, malware: 4, logs: 5,
+};
 
 const TONE: Record<string, string> = {
   neutral: 'text-slate-200',
@@ -52,10 +58,20 @@ const AnalysisSection: React.FC<Props> = ({
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, ease: 'easeOut' }}
-      className={`glass-card overflow-hidden transition-shadow duration-300 ${
+      className={`aeyes-inset glass-card overflow-hidden ${
         open ? 'border-green-500/25' : 'hover:border-green-500/20'
       }`}
     >
+      {/* Decorative layer: travelling edge signal, light sweep, HUD corners and a
+          staggered scan line. Purely visual - no data is implied by any of it. */}
+      <span className="aeyes-inset__edge" aria-hidden="true" />
+      <span className="aeyes-inset__sweep" aria-hidden="true" />
+      <span className="aeyes-panel-scan" aria-hidden="true"
+        style={{ animationDelay: `${SCAN_DELAY[category.id] ?? 0}s` }} />
+      <span className="aeyes-inset__corner aeyes-inset__corner--tl" aria-hidden="true" />
+      <span className="aeyes-inset__corner aeyes-inset__corner--tr" aria-hidden="true" />
+      <span className="aeyes-inset__corner aeyes-inset__corner--bl" aria-hidden="true" />
+      <span className="aeyes-inset__corner aeyes-inset__corner--br" aria-hidden="true" />
       <button
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
@@ -66,7 +82,7 @@ const AnalysisSection: React.FC<Props> = ({
             {category.index}
           </span>
           <div className="min-w-0">
-            <h2 className="text-base md:text-lg font-orbitron font-bold tracking-[0.18em] text-white uppercase truncate">
+            <h2 className="aeyes-inset__title text-base md:text-lg font-orbitron font-bold tracking-[0.18em] text-white uppercase truncate">
               {category.title}
             </h2>
             <p className="text-[10px] font-mono-data text-slate-500 truncate">
@@ -83,19 +99,16 @@ const AnalysisSection: React.FC<Props> = ({
                 : 'text-slate-500 border-slate-600/30 bg-slate-800/40'
             }`}
           >
-            {live && (
-              <motion.span
-                animate={{ opacity: [1, 0.25, 1] }}
-                transition={{ duration: 2, repeat: Infinity }}
-                className="w-1.5 h-1.5 rounded-full bg-green-400"
-              />
+            {live ? (
+              <span className="aeyes-live-dot" aria-hidden="true" />
+            ) : (
+              <span className="aeyes-live-dot aeyes-live-dot--warn" aria-hidden="true" />
             )}
-            {!live && <Radio size={9} />}
             {state}
           </span>
           <ChevronRight
             size={16}
-            className={`text-slate-500 group-hover:text-green-400 transition-transform duration-300 ${
+            className={`aeyes-inset__arrow text-slate-500 group-hover:text-green-400 ${
               open ? 'rotate-90' : ''
             }`}
           />
@@ -106,11 +119,11 @@ const AnalysisSection: React.FC<Props> = ({
       {!open && stats.length > 0 && (
         <div className="px-5 pb-4 grid grid-cols-2 md:grid-cols-4 gap-3">
           {stats.map(s => (
-            <div key={s.label} className="rounded-md border border-white/5 bg-slate-900/30 px-3 py-2">
+            <div key={s.label} className="aeyes-stat rounded-md border border-white/5 bg-slate-900/30 px-3 py-2">
               <p className="text-[8px] font-orbitron uppercase tracking-[0.16em] text-slate-500">
                 {s.label}
               </p>
-              <p className={`text-lg font-mono-data ${TONE[s.tone ?? 'neutral']}`}>{s.value}</p>
+              <p className={`aeyes-stat__value text-lg font-mono-data ${TONE[s.tone ?? 'neutral']}`}>{s.value}</p>
             </div>
           ))}
         </div>

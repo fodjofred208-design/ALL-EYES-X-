@@ -150,9 +150,10 @@ const P2PShare = () => {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <BackButton />
-          <h1 className="text-3xl font-bold font-orbitron tracking-tight text-white uppercase">
+          <h1 className="text-3xl md:text-4xl font-orbitron font-bold tracking-[0.28em] text-white aeyes-title-glow uppercase">
             Neural <span className="text-green-500">Injection</span>
           </h1>
+          <div className="aeyes-divider mt-2 w-56 md:w-80" />
           <p className="text-slate-400 font-rajdhani text-xs tracking-widest mt-1 uppercase">Encrypted P2P Data Tunneling</p>
         </div>
         <div className="flex items-center gap-2 px-4 py-2 bg-green-600/10 border border-green-500/30 rounded-lg text-green-500 text-[10px] font-orbitron uppercase">

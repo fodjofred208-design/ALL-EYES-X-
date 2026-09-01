@@ -4725,6 +4725,108 @@ def api_analysis_talkers():
     }), 200
 
 
+@app.route('/api/analysis/device/<device_id>/metrics', methods=['GET'])
+@login_required
+def api_analysis_device_metrics(device_id):
+    """Everything needed to chart one device, in one request.
+
+    Separates the two kinds of data honestly:
+      current  - the latest telemetry row, i.e. right now
+      history  - real samples over time (traffic_samples), which is the only
+                 per-device time series the system actually stores
+    Fields with no data are returned as null, never as 0, so the UI can say
+    "not reported" instead of drawing a misleading flat line at zero.
+    """
+    dev = connected_devices.get(device_id)
+    if not dev:
+        return jsonify({'error': 'Device not found'}), 404
+
+    conn = get_db()
+    try:
+        tel_row = conn.execute(
+            "SELECT * FROM telemetry WHERE device_id=?", (device_id,)
+        ).fetchone()
+        try:
+            traffic = [dict(r) for r in conn.execute("""
+                SELECT ts, download, upload FROM traffic_samples
+                WHERE device_id=? ORDER BY ts ASC LIMIT 500
+            """, (device_id,)).fetchall()]
+        except sqlite3.OperationalError:
+            traffic = []
+        try:
+            alert_rows = [dict(r) for r in conn.execute(
+                "SELECT severity, COUNT(*) AS c FROM alerts WHERE device_id=? GROUP BY severity",
+                (device_id,),
+            ).fetchall()]
+        except sqlite3.OperationalError:
+            alert_rows = []
+    finally:
+        conn.close()
+
+    tel = dict(tel_row) if tel_row else {}
+
+    def num(key):
+        v = tel.get(key)
+        return None if v in (None, '', -1) else v
+
+    # Online duration: how long this agent has been known, and since it last spoke.
+    registered_at = dev.get('registered_at')
+    last_seen = dev.get('last_seen')
+    online_seconds = None
+    if registered_at and last_seen:
+        try:
+            online_seconds = int(
+                (datetime.fromisoformat(last_seen) - datetime.fromisoformat(registered_at)).total_seconds()
+            )
+        except (ValueError, TypeError):
+            online_seconds = None
+
+    risk = compute_device_risk(device_id, dev, tel_row, [])
+
+    return jsonify({
+        'device': {
+            'device_id': device_id,
+            'hostname': dev.get('hostname', 'Unknown'),
+            'ip': dev.get('ip'),
+            'mac': dev.get('mac'),
+            'os_name': dev.get('os_name') or dev.get('os'),
+            'architecture': dev.get('architecture'),
+            'status': dev.get('status'),
+            'is_vm': bool(dev.get('is_vm')),
+            'hypervisor': dev.get('hypervisor', ''),
+            'registered_at': registered_at,
+            'last_seen': last_seen,
+            'online_seconds': online_seconds,
+            'data_usage': dev.get('data_usage'),
+        },
+        'current': {
+            'cpu': num('cpu'),
+            'ram': num('ram'),
+            'disk': num('disk'),
+            'battery': num('battery'),
+            'net_down_bps': num('net_down_bps'),
+            'net_up_bps': num('net_up_bps'),
+            'net_sent': num('net_sent'),
+            'net_recv': num('net_recv'),
+            'firewall': tel.get('firewall', -1),
+            'antivirus': tel.get('antivirus', -1),
+            'encrypted_disk': tel.get('encrypted_disk', -1),
+            'open_ports': _parse_json_list(tel.get('open_ports')),
+            'usb_devices': _parse_json_list(tel.get('usb_devices')),
+            'suspicious_processes': _parse_json_list(tel.get('suspicious_processes')),
+            'logged_user': tel.get('logged_user') or None,
+            'gpu': tel.get('gpu') or None,
+            'wifi': tel.get('wifi') or None,
+            'updated_at': tel.get('updated_at') or None,
+        },
+        'traffic_history': traffic,
+        'alerts_by_severity': alert_rows,
+        'risk': risk,
+        'has_telemetry': bool(tel),
+        'has_traffic_history': bool(traffic),
+    }), 200
+
+
 @app.route('/api/analysis/sessions', methods=['GET'])
 @login_required
 def api_analysis_sessions():
@@ -5218,6 +5320,39 @@ def api_alert_resolve(alert_id):
                     f'alert {alert_id} not found')
         return jsonify({'error': 'Alert not found'}), 404
     audit_event(session.get('user', 'system'), '', 'alert_resolved', 'ok', str(alert_id))
+    return jsonify({'success': True, 'id': alert_id}), 200
+
+
+@app.route('/api/alerts/<int:alert_id>', methods=['DELETE'])
+@login_required
+def api_alert_delete(alert_id):
+    """Permanently remove one alert.
+
+    Destructive, so the alert's content is written into the audit trail before
+    the row goes - deleting an alert must not also delete the evidence that it
+    existed. Returns 404 rather than a silent success when the id is unknown.
+    """
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT device_id, type, severity, message FROM alerts WHERE id=?",
+            (alert_id,),
+        ).fetchone()
+        if not row:
+            audit_event(session.get('user', 'system'), '', 'alert_deleted', 'failed',
+                        f'alert {alert_id} not found')
+            return jsonify({'error': 'Alert not found'}), 404
+        conn.execute("DELETE FROM alerts WHERE id=?", (alert_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    detail = (
+        f"device={row['device_id']} type={row['type']} "
+        f"severity={row['severity']} message={str(row['message'])[:160]}"
+    )
+    audit_event(session.get('user', 'system'), row['device_id'] or '',
+                'alert_deleted', 'ok', detail)
     return jsonify({'success': True, 'id': alert_id}), 200
 
 

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import BackButton from '../components/BackButton';
-import { ShieldAlert, Copy, Check, Filter } from 'lucide-react';
+import { ShieldAlert, Copy, Check, Filter, Trash2 } from 'lucide-react';
 import { useDashboard } from '../context/DashboardContext';
+import { API_BASE } from '../utils/api';
 import { relativeTime } from '../utils/format';
 
 const SEV: Record<string, string> = {
@@ -9,9 +10,11 @@ const SEV: Record<string, string> = {
 };
 
 const AlertCenter: React.FC = () => {
-  const { data, loading } = useDashboard();
+  const { data, loading, refresh } = useDashboard();
   const [filter, setFilter] = useState('all');
   const [copied, setCopied] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Merge alerts from the dashboard payload
   const alerts = data?.alerts ?? { total: 0, recent: [] };
@@ -32,6 +35,30 @@ const AlertCenter: React.FC = () => {
 
   // Sort newest first
   filtered.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0));
+
+  /**
+   * Permanently delete an alert, behind an explicit confirm. The backend writes
+   * the alert's content into the audit trail before removing the row, so
+   * deleting it does not also erase the evidence that it existed.
+   */
+  const deleteAlert = async (a: any) => {
+    if (a?.id == null || deleting) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/alerts/${a.id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (res.ok) {
+        setPendingDelete(null);
+        refresh();
+      }
+    } catch {
+      // Leave the row in place; a failed delete must not look like a success.
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const reportAlert = (a: any) => {
     const text =
@@ -132,14 +159,52 @@ const AlertCenter: React.FC = () => {
                     </p>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => reportAlert(a)}
-                  className="shrink-0 px-2 py-1 rounded-lg border border-white/10 text-[8px] font-orbitron uppercase tracking-widest text-slate-400 hover:text-green-300 hover:border-green-500/40 transition-all flex items-center gap-1"
-                >
-                  {copied === (a.id || 'copy') ? <Check size={10} /> : <Copy size={10} />}
-                  {copied === (a.id || 'copy') ? 'Copied' : 'Report'}
-                </button>
+                <div className="shrink-0 flex items-center gap-1.5">
+                  {pendingDelete === String(a.id) ? (
+                    <>
+                      <span className="text-[8px] font-orbitron uppercase tracking-widest text-red-300/90">
+                        Delete?
+                      </span>
+                      <button
+                        type="button"
+                        disabled={deleting}
+                        onClick={() => deleteAlert(a)}
+                        className="px-2 py-1 rounded-lg border border-red-500/40 bg-red-500/10 text-[8px] font-orbitron uppercase tracking-widest text-red-300 hover:bg-red-500/20 transition-all disabled:opacity-50"
+                      >
+                        {deleting ? '...' : 'Yes'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={deleting}
+                        onClick={() => setPendingDelete(null)}
+                        className="px-2 py-1 rounded-lg border border-white/10 text-[8px] font-orbitron uppercase tracking-widest text-slate-400 hover:text-slate-200 transition-all disabled:opacity-50"
+                      >
+                        No
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => reportAlert(a)}
+                        className="px-2 py-1 rounded-lg border border-white/10 text-[8px] font-orbitron uppercase tracking-widest text-slate-400 hover:text-green-300 hover:border-green-500/40 transition-all flex items-center gap-1"
+                      >
+                        {copied === (a.id || 'copy') ? <Check size={10} /> : <Copy size={10} />}
+                        {copied === (a.id || 'copy') ? 'Copied' : 'Report'}
+                      </button>
+                      {a?.id != null && (
+                        <button
+                          type="button"
+                          title="Delete this alert permanently"
+                          onClick={() => setPendingDelete(String(a.id))}
+                          className="p-1.5 rounded-lg border border-white/10 text-slate-500 hover:text-red-300 hover:border-red-500/40 transition-all"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             );
           })}

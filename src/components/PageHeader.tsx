@@ -12,6 +12,13 @@ interface Props {
   right?: React.ReactNode;
   /** Where the back arrow goes. Defaults to browser history. */
   backTo?: string;
+  /**
+   * 'hero' matches the Command Center heading exactly (larger, wider tracking)
+   * so the top-level sidebar pages read as peers of it rather than sub-pages.
+   */
+  size?: 'default' | 'hero';
+  /** Hide the back arrow - used by top-level pages that have nothing to go back to. */
+  hideBack?: boolean;
 }
 
 /**
@@ -20,7 +27,7 @@ interface Props {
  * Every ALL EYES X page uses this so the back arrow and title treatment are
  * identical everywhere - no page is a dead end.
  */
-const PageHeader: React.FC<Props> = ({ title, highlight, subtitle, right, backTo }) => {
+const PageHeader: React.FC<Props> = ({ title, highlight, subtitle, right, backTo, size = 'default', hideBack = false }) => {
   const navigate = useNavigate();
 
   const goBack = () => {
@@ -43,17 +50,23 @@ const PageHeader: React.FC<Props> = ({ title, highlight, subtitle, right, backTo
   return (
     <div className="flex items-start justify-between gap-4 flex-wrap">
       <div className="flex items-start gap-3 min-w-0">
-        <button
-          onClick={goBack}
-          title="Go back"
-          aria-label="Go back"
-          className="mt-1 p-2 rounded-lg border border-green-500/20 bg-green-500/5 text-green-400 hover:bg-green-600 hover:text-white hover:border-green-500/50 transition-all shrink-0"
-        >
-          <ArrowLeft size={16} />
-        </button>
+        {!hideBack && (
+          <button
+            onClick={goBack}
+            title="Go back"
+            aria-label="Go back"
+            className="mt-1 p-2 rounded-lg border border-green-500/20 bg-green-500/5 text-green-400 hover:bg-green-600 hover:text-white hover:border-green-500/50 transition-all shrink-0"
+          >
+            <ArrowLeft size={16} />
+          </button>
+        )}
 
         <div className="min-w-0">
-          <h1 className="text-2xl md:text-3xl font-orbitron font-bold tracking-[0.25em] text-white aeyes-title-glow truncate">
+          <h1 className={`font-orbitron font-bold text-white aeyes-title-glow truncate ${
+            size === 'hero'
+              ? 'text-3xl md:text-4xl tracking-[0.28em]'
+              : 'text-2xl md:text-3xl tracking-[0.25em]'
+          }`}>
             {titleNode}
           </h1>
           {subtitle && (
