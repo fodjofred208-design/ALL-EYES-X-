@@ -566,6 +566,20 @@ def init_db():
             UNIQUE(indicator_id, device_id, detail)
         );
 
+        CREATE TABLE IF NOT EXISTS telemetry_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT DEFAULT '',
+            ts REAL DEFAULT 0,
+            cpu REAL,
+            ram REAL,
+            disk REAL,
+            net_sent REAL,
+            net_recv REAL,
+            open_port_count INTEGER,
+            process_count INTEGER,
+            suspicious_count INTEGER
+        );
+
         CREATE TABLE IF NOT EXISTS auth_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT DEFAULT '',
@@ -690,6 +704,7 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_netlinks_device ON network_links (device_id, seen_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_logevents_device ON log_events (device_id, ingested_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_logevents_severity ON log_events (severity)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_telhist_device ON telemetry_history (device_id, ts DESC)")
     ensure_column('alerts', 'severity', "TEXT DEFAULT 'info'")
     ensure_column('alerts', 'title', "TEXT DEFAULT ''")
     ensure_column('alerts', 'category', "TEXT DEFAULT 'system'")
@@ -1330,6 +1345,35 @@ def persist_telemetry(device_id, data):
                 if 'net_speed' in data else float(prev.get('net_up_bps') or 0),
             now_iso,
         ))
+
+        # Append a history sample, but only when the agent actually reported
+        # telemetry. A telemetry-less heartbeat must not write a row of zeros -
+        # that would poison the baseline the anomaly detector compares against,
+        # the same failure mode the traffic_samples guard below prevents.
+        if any(k in data for k in ('cpu', 'ram', 'disk')):
+            _ports = _parse_json_list(data.get('open_ports')) if 'open_ports' in data else []
+            _proc = _parse_json_list(data.get('processes')) if 'processes' in data else []
+            _susp = _parse_json_list(data.get('suspicious_processes')) if 'suspicious_processes' in data else []
+            conn.execute(
+                "INSERT INTO telemetry_history "
+                "(device_id, ts, cpu, ram, disk, net_sent, net_recv, "
+                " open_port_count, process_count, suspicious_count) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    device_id, time.time(),
+                    data.get('cpu'), data.get('ram'), data.get('disk'),
+                    data.get('net_sent'), data.get('net_recv'),
+                    len(_ports), len(_proc), len(_susp),
+                ),
+            )
+            # Keep a bounded window per device so the table cannot grow without
+            # bound on a fleet that has been running for months.
+            conn.execute(
+                "DELETE FROM telemetry_history WHERE device_id=? AND id NOT IN ("
+                "  SELECT id FROM telemetry_history WHERE device_id=? "
+                "  ORDER BY ts DESC, id DESC LIMIT ?)",
+                (device_id, device_id, int(TELEMETRY_HISTORY_PER_DEVICE)),
+            )
 
         # Only record a traffic sample when the agent actually reported counters,
         # otherwise telemetry-less heartbeats pollute the trend with 0,0 points.
@@ -5211,6 +5255,11 @@ def api_device_links(device_id):
 # ============================================================
 
 LOG_EVENTS_PER_DEVICE = 4000
+# Telemetry history retained per device. Enough for a meaningful baseline
+# without growing without bound on a long-running fleet.
+TELEMETRY_HISTORY_PER_DEVICE = 4000
+# A baseline needs this many samples before a deviation means anything.
+ANOMALY_MIN_SAMPLES = 30
 
 
 @app.route('/api/device/<device_id>/logs', methods=['POST'])
@@ -5884,6 +5933,112 @@ def api_analysis_ai():
         'note': (
             'The advice below is model inference, not telemetry. The observed facts '
             'above are what the system actually collected.'
+        ),
+    }), 200
+
+
+# ============================================================
+# ANOMALY DETECTION
+# ------------------------------------------------------------
+# Compares a device's recent telemetry against a baseline computed from its own
+# stored history. A deviation is only reported once enough samples exist -
+# without a baseline a "deviation" is just a guess, so the response says
+# BUILDING BASELINE instead.
+#
+# This is statistics over real samples, not a model. Nothing is labelled anomalous
+# on a hunch: every finding names the metric, the baseline mean, the observed
+# value and how many standard deviations away it sits.
+# ============================================================
+
+# Metric, column, and how many standard deviations counts as a deviation.
+ANOMALY_METRICS = (
+    ('cpu', 'cpu', 2.5),
+    ('ram', 'ram', 2.5),
+    ('disk', 'disk', 2.5),
+    ('open ports', 'open_port_count', 2.0),
+    ('suspicious processes', 'suspicious_count', 2.0),
+)
+
+
+@app.route('/api/analysis/anomalies', methods=['GET'])
+@login_required
+def api_analysis_anomalies():
+    """Baseline vs current, per device, with deviation expressed in sigma."""
+    only = (request.args.get('device_id') or '').strip() or None
+    conn = get_db()
+    results = []
+    try:
+        ids = [only] if only else [d.get('id') for d in connected_devices.values() if d.get('id')]
+        for dev_id in ids:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT * FROM telemetry_history WHERE device_id=? ORDER BY ts DESC LIMIT 2000",
+                (dev_id,),
+            ).fetchall()]
+            hostname = (connected_devices.get(dev_id) or {}).get('hostname', dev_id)
+            entry = {
+                'device_id': dev_id,
+                'hostname': hostname,
+                'samples': len(rows),
+                'status': 'ok' if len(rows) >= ANOMALY_MIN_SAMPLES else 'building_baseline',
+                'metrics': [],
+                'anomalies': [],
+            }
+            if len(rows) < ANOMALY_MIN_SAMPLES:
+                entry['note'] = (
+                    f"{len(rows)} of {ANOMALY_MIN_SAMPLES} samples collected. "
+                    "A baseline needs more history before a deviation means anything."
+                )
+                results.append(entry)
+                continue
+
+            for label, column, threshold in ANOMALY_METRICS:
+                # rows are newest-first, so values[0] is the current reading.
+                # The baseline is computed from the samples AFTER it, excluding
+                # the current one - otherwise a spike contaminates its own
+                # baseline, inflating the mean and the standard deviation and
+                # making the very deviation we are looking for harder to see.
+                values = [r[column] for r in rows if r.get(column) is not None]
+                if len(values) < ANOMALY_MIN_SAMPLES + 1:
+                    continue
+                current = values[0]
+                baseline = values[1:]
+                mean = sum(baseline) / len(baseline)
+                variance = sum((v - mean) ** 2 for v in baseline) / len(baseline)
+                stddev = variance ** 0.5
+                sigma = abs(current - mean) / stddev if stddev > 0 else 0.0
+                metric = {
+                    'metric': label,
+                    'baseline_mean': round(mean, 2),
+                    'baseline_stddev': round(stddev, 2),
+                    'current': round(float(current), 2),
+                    'sigma': round(sigma, 2),
+                    'samples': len(baseline),
+                    'anomalous': sigma >= threshold and stddev > 0,
+                }
+                entry['metrics'].append(metric)
+                if metric['anomalous']:
+                    entry['anomalies'].append(metric)
+
+            entry['note'] = (
+                f"Baseline over {max(0, len(rows) - 1)} prior samples. A metric is flagged at "
+                ">= 2.5 sigma (2.0 for counts), with zero-variance metrics never flagged."
+            )
+            results.append(entry)
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        conn.close()
+
+    return jsonify({
+        'devices': results,
+        'total': len(results),
+        'building_baseline': sum(1 for r in results if r['status'] == 'building_baseline'),
+        'with_anomalies': sum(1 for r in results if r['anomalies']),
+        'min_samples': ANOMALY_MIN_SAMPLES,
+        'note': (
+            'Statistics over the device own stored telemetry history, not a model. '
+            'A device with too few samples reports BUILDING BASELINE rather than '
+            'inventing a deviation.'
         ),
     }), 200
 

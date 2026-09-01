@@ -279,14 +279,15 @@ export const ANALYSIS_CATEGORIES: AnalysisCategory[] = [
       },
       {
         id: 'anomaly',
-        title: 'AI Anomaly Detection',
-        status: 'deferred',
-        telemetry: 'None.',
-        history: 'none',
+        title: 'Anomaly Detection',
+        status: 'partial',
+        telemetry:
+          'Per-device telemetry history appended on every heartbeat (cpu, ram, disk, net counters, open-port and suspicious-process counts), retained at 4000 samples per device. Deviations are computed as standard deviations from the device own prior samples.',
+        history: 'historical',
         missing:
-          'Per-device telemetry is a single row overwritten on every heartbeat, so there is no history to baseline against. Anomaly detection also needs a model.',
+          'This is statistics over the device own history, not a model. It needs at least 30 samples before it reports anything, and reports BUILDING BASELINE until then. Metrics with zero variance in the baseline are never flagged, because no deviation can be measured. No predictive or ML-based forecasting.',
         unlocks:
-          'Baseline, current behaviour, deviation and confidence once time-series telemetry and a model exist.',
+          'Predictive or ML-based detection once a model is introduced. The stored history is what such a model would train on.',
       },
     ],
   },
