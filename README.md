@@ -6,6 +6,11 @@ ALL EYES X is a cybersecurity command-center and authorized remote administratio
 
 ---
 
+## New server migration
+
+For Windows setup, Tailscale 100.70.239.62, client migration and database recovery,
+see [SERVER_MIGRATION.md](SERVER_MIGRATION.md).
+
 ## 1. Current architecture
 
 ```text
@@ -218,7 +223,7 @@ python client\client.py http://YOUR_SERVER_IP:5000
 Example using Tailscale:
 
 ```powershell
-python client\client.py http://100.104.145.118:5000
+python client\client.py http://100.70.239.62:5000
 ```
 
 The device should appear in the dashboard under Devices and Command Center.
@@ -468,7 +473,7 @@ Examples:
 192.168.1.10
 192.168.1.0/24
 10.0.0.0/24
-100.104.145.118
+100.70.239.62
 ```
 
 To allow a public IP/range you own:

@@ -220,8 +220,9 @@ CORS(
                 "http://localhost:5000",
                 "http://127.0.0.1:5173",
                 "http://127.0.0.1:5000",
-                "http://100.104.145.118:5000",
-                "https://meta-f.bittern-adelie.ts.net",
+                "http://100.70.239.62:5000",
+                "http://100.70.239.62:5173",
+                "http://100.70.239.62:8080",
                 "http://192.168.56.1:5000",
                 "http://192.168.56.1:5173",
             ],
@@ -7368,7 +7369,7 @@ if __name__ == '__main__':
     ║        Device detail endpoints available      ║
     ║        Hardware inventory store active        ║
     ║                                              ║
-    ║     Dashboard: http://meta-f.bittern-adelie.ts.net      ║
+    ║     Dashboard: http://100.70.239.62:5173               ║
     ║     Login:     admin / FRED123               ║
     ║                                              ║
     ╚══════════════════════════════════════════════╝
@@ -7391,6 +7392,7 @@ if __name__ == '__main__':
     app,
     host="0.0.0.0",
     port=5000,
-    debug=True,
+    # Never expose the interactive debugger on the tailnet by default.
+    debug=os.environ.get("ALLEYESX_DEBUG", "").lower() in ("1", "true", "yes"),
     allow_unsafe_werkzeug=True
 )

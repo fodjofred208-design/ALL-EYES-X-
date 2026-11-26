@@ -5,7 +5,7 @@
 ║              Cross-Platform Client Agent v3.3                ║
 ║                                                              ║
 ║  Platforms: Windows, Linux, macOS, Android (Termux)          ║
-║  Deployment: Tailscale (http://100.104.145.118:5000)         ║
+║  Deployment: Tailscale (http://100.70.239.62:5000)         ║
 ║                                                              ║
 ║  ENHANCEMENTS v3.3:                                          ║
 ║  - Full hardware inventory collection (OS, CPU, RAM, GPU,    ║
@@ -248,7 +248,7 @@ def get_peripherals_info():
 # ============================================================
 # CONFIGURATION
 # ============================================================
-SERVER_URL = "http://100.104.145.118:5000"
+SERVER_URL = "http://100.70.239.62:5000"
 DEVICE_ID_CACHE = os.path.join(os.path.expanduser('~'), '.alleyesx_device_id')
 # Defined at module level so the client stays importable (tests, Termux wrapper,
 # embedding). __main__ overwrites it with generate_device_id().

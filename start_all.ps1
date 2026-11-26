@@ -16,6 +16,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Prefer the project environment, matching the documented dependency install.
+$VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
+if ($Python -eq "python" -and (Test-Path $VenvPython)) { $Python = $VenvPython }
 $LogDir = Join-Path $Root "logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
