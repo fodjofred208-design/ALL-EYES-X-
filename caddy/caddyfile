@@ -12,5 +12,20 @@
 
 	reverse_proxy /socket.io/* 127.0.0.1:5000
 
+	# Prefer Vite for development. If it is stopped, Flask can serve the
+	# previously built dashboard from dist/ (run npm ci && npm run build).
 	reverse_proxy 127.0.0.1:5173
+
+	handle_errors {
+		@dashboard {
+			expression `{http.error.status_code} == 502`
+			not path /api/* /socket.io/* /static/* /client.py
+		}
+		handle @dashboard {
+			reverse_proxy 127.0.0.1:5000
+		}
+		handle {
+			respond "Upstream unavailable. Start Flask and check the service logs." {http.error.status_code}
+		}
+	}
 }

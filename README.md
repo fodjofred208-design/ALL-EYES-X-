@@ -17,19 +17,14 @@ see [SERVER_MIGRATION.md](SERVER_MIGRATION.md).
 ## 1. Current architecture
 
 ```text
-Browser / React Dashboard
-        ↓
-Vite dev server :5173
-        ↓
-Caddy reverse proxy :8080
-        ↓
-Flask API + Socket.IO :5000
-        ↓
-SQLite database server/aeyes_data.db
-        ↑
-client.py agents
-        ↑
-Windows / Linux / macOS / Android / limited iOS-like Python environments
+Browser → Tailscale Serve HTTPS (optional) → Caddy :8080
+                                              ├─ UI → Vite :5173 (development)
+                                              │        └─ if unavailable: Flask built UI
+                                              └─ API / Socket.IO → Flask :5000
+                                                                     ↓
+                                                        SQLite server/aeyes_data.db
+                                                                     ↑
+                                                   authorized client.py agents
 ```
 
 For remote networks, use Tailscale where possible:
@@ -49,7 +44,7 @@ Install:
 
 ```text
 Python 3.10+
-Node.js 20+
+Node.js 20.19+ or 22.12+ (Node.js 22 LTS recommended)
 Git
 Caddy
 Tailscale, recommended for remote clients
@@ -73,9 +68,14 @@ Tailscale, recommended for remote access
 From the project root:
 
 ```powershell
-npm install
-pip install -r requirements.txt
+npm ci
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+Use `.\.venv\Scripts\python.exe` to start the server so it uses the same
+Python environment where the dependencies were installed. See
+[DEPLOYMENT_AUDIT.md](DEPLOYMENT_AUDIT.md) for the lab checks and known limits.
 
 Recommended Python client extras:
 

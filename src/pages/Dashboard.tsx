@@ -106,7 +106,7 @@ const DashboardPage: React.FC = () => {
         <div className="flex items-end justify-between flex-wrap gap-3">
           <div>
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-3xl md:text-4xl font-orbitron font-bold tracking-[0.28em] text-white aeyes-title-glow">
+              <h1 className="text-xl sm:text-3xl md:text-4xl font-orbitron font-bold tracking-[0.12em] sm:tracking-[0.28em] text-white aeyes-title-glow">
                 COMMAND <span className="text-[#22c55e]">CENTER</span>
               </h1>
               <span

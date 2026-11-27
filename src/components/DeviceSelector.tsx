@@ -72,7 +72,7 @@ const DeviceSelector = () => {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
-            className="absolute top-full left-0 mt-2 w-72 glass-card border-green-500/20 z-[100] overflow-hidden"
+            className="absolute top-full left-0 mt-2 w-60 sm:w-72 max-w-[calc(100vw-3rem)] glass-card border-green-500/20 z-[100] overflow-hidden"
           >
              <div className="p-3 bg-green-500/5 border-b border-white/5">
                 <span className="text-[9px] font-orbitron text-green-500 uppercase tracking-widest">Active Neural Nodes</span>

@@ -33,7 +33,7 @@ const Sidebar: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      if (isOpen && !(e.target as Element).closest('#sidebar-root')) setIsOpen(false);
+      if (isOpen && !(e.target as Element).closest('#sidebar-root, #sidebar-toggle')) setIsOpen(false);
     };
     if (isOpen) document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
@@ -47,7 +47,7 @@ const Sidebar: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
       {/* ============ FIXED TOP BAR ============ */}
       <nav className="fixed top-0 left-0 right-0 h-16 bg-[#060812]/90 backdrop-blur-xl border-b border-white/5 z-[90] flex items-center justify-between px-5">
         <div className="flex items-center gap-4">
-          <button onClick={() => setIsOpen(!isOpen)} className="p-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-500 hover:bg-green-600 hover:text-white transition-all">
+          <button id="sidebar-toggle" type="button" aria-label={isOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={isOpen} aria-controls="sidebar-menu" onClick={() => setIsOpen(!isOpen)} className="p-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-500 hover:bg-green-600 hover:text-white transition-all">
             {isOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
           <div className="hidden sm:flex items-center gap-2">
@@ -76,6 +76,7 @@ const Sidebar: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         <AnimatePresence>
           {isOpen && (
             <motion.aside
+              id="sidebar-menu"
               initial={{ x: -320, opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: -320, opacity: 0 }}
@@ -89,6 +90,11 @@ const Sidebar: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
                   <h2 className="text-xl font-bold font-orbitron text-white tracking-wider">ALL EYES X</h2>
                 </div>
                 <p className="text-[9px] text-green-500/50 font-orbitron uppercase tracking-[0.25em] ml-9">Dept. of Black Cortex Universal Control</p>
+              </div>
+
+              {/* The top-bar selector is hidden on phones; keep it reachable here. */}
+              <div className="px-4 mb-4 md:hidden">
+                <DeviceSelector />
               </div>
 
               {/* Nav Links */}

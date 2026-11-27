@@ -107,7 +107,7 @@ const Login: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
           </motion.div>
         )}
 
-        <div className={`glass-card p-10 shadow-[0_0_50px_rgba(34,197,94,0.1)] transition-all duration-500 ${
+        <div className={`glass-card p-5 sm:p-10 shadow-[0_0_50px_rgba(34,197,94,0.1)] transition-all duration-500 ${
           securityState ? 'border-2 border-red-500/50 shadow-[0_0_70px_rgba(239,68,68,0.25)]' : 'border border-green-500/30'
         }`}>
           {securityState && (

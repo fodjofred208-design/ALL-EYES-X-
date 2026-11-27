@@ -7021,6 +7021,10 @@ def handle_socket_touch_event(data):
     did nothing in the normal (connected) case and only worked when the socket
     was down and the code fell back to HTTP. This makes both paths identical.
     """
+    # Match POST /api/touch: a Socket.IO connection is not proof of login.
+    # The authenticated browser's Flask session is shared with its socket.
+    if 'user' not in session:
+        return
     if not data or 'device_id' not in data:
         return
     for field in ('event', 'x', 'y'):
