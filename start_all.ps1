@@ -33,6 +33,15 @@ function Test-Port([int]$Port) {
   } catch { return $false }
 }
 
+function Wait-AexPort([string]$Name, [int]$Port, [int]$Seconds = 30) {
+  $deadline = (Get-Date).AddSeconds($Seconds)
+  do {
+    if (Test-Port $Port) { return }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+  throw "$Name did not listen on port $Port within $Seconds seconds. Check logs\$Name.err.log and logs\$Name.out.log."
+}
+
 function Start-AexProcess([string]$Name, [string]$FilePath, [string]$Arguments, [string]$WorkingDirectory, [int]$Port = 0) {
   if ($Port -gt 0 -and (Test-Port $Port)) {
     Write-Host "[SKIP] $Name already appears to be listening on port $Port" -ForegroundColor Yellow
@@ -51,12 +60,17 @@ Write-Host "=============================================" -ForegroundColor Gree
 Write-Host "Root: $Root"
 Write-Host "Logs: $LogDir"
 
+# Verify upstreams before advertising Caddy/Serve. A process can start and then
+# immediately exit (missing eventlet, missing npm dependencies, port conflict).
+Start-AexProcess -Name "flask" -FilePath $Python -Arguments "server\app.py" -WorkingDirectory $Root -Port 5000
+Wait-AexPort -Name "flask" -Port 5000
+Start-AexProcess -Name "vite" -FilePath $Npm -Arguments "run dev -- --host 0.0.0.0" -WorkingDirectory $Root -Port 5173
+Wait-AexPort -Name "vite" -Port 5173
+
 if (-not $NoCaddy) {
   Start-AexProcess -Name "caddy" -FilePath $Caddy -Arguments "run --config `"$Root\caddy\caddyfile`"" -WorkingDirectory $Root -Port 8080
+  Wait-AexPort -Name "caddy" -Port 8080
 }
-
-Start-AexProcess -Name "flask" -FilePath $Python -Arguments "server\app.py" -WorkingDirectory $Root -Port 5000
-Start-AexProcess -Name "vite" -FilePath $Npm -Arguments "run dev -- --host 0.0.0.0" -WorkingDirectory $Root -Port 5173
 
 if (-not $NoClient) {
   Start-AexProcess -Name "client" -FilePath $Python -Arguments "client\client.py $ServerUrl" -WorkingDirectory $Root -Port 0
@@ -76,6 +90,8 @@ if ($Serve) {
   if (-not $NoCaddy) {
     Write-Host "[SERVE] tailscale serve --bg --https=443 http://127.0.0.1:8080" -ForegroundColor Green
     & $Tailscale serve --bg --https=443 http://127.0.0.1:8080
+    if ($LASTEXITCODE -ne 0) { throw "Tailscale Serve failed (exit $LASTEXITCODE). Check Tailscale status, permissions and HTTPS settings." }
+    Write-Host "Check the actual HTTPS URL and configuration with: tailscale serve status" -ForegroundColor Cyan
   } else {
     Write-Host "[SERVE] skipped: -NoCaddy was given, nothing is listening on 8080" -ForegroundColor Yellow
   }
