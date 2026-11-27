@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { SOCKET_URL } from '../utils/api';
+import { socketOptions } from '../utils/socketOptions';
 
 interface SocketContextType {
   socket: Socket | null;
@@ -21,22 +22,15 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [isConnected, setIsConnected] = React.useState(false);
 
  useEffect(() => {
-  const socket = io(SOCKET_URL || '/', {
-    transports: ['websocket', 'polling'],
-    reconnection: true,
-    reconnectionAttempts: Infinity,
-    reconnectionDelay: 1000,
-    reconnectionDelayMax: 5000,
-    withCredentials: true,
-  });
+  const socket = io(SOCKET_URL || '/', socketOptions);
 
   socket.on('connect', () => {
     console.log('[SocketIO] Connected');
     setIsConnected(true);
   });
 
-  socket.on('disconnect', () => {
-    console.log('[SocketIO] Disconnected');
+  socket.on('disconnect', (reason) => {
+    console.warn('[SocketIO] Disconnected:', reason);
     setIsConnected(false);
   });
 

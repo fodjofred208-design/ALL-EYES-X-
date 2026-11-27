@@ -102,7 +102,8 @@ Write-Host "Open locally:     http://127.0.0.1:8080" -ForegroundColor Cyan
 Write-Host "Vite direct:      http://127.0.0.1:5173" -ForegroundColor Cyan
 Write-Host "Flask API:        http://127.0.0.1:5000" -ForegroundColor Cyan
 if ($Serve) {
-  Write-Host "Remote HTTPS:     https://<machine>.<tailnet>.ts.net (via tailscale serve)" -ForegroundColor Cyan
+  Write-Host "Requested URL:    https://all-eyes-x-server.bittern-adelie.ts.net/" -ForegroundColor Cyan
+  Write-Host "Verify the actual device name and URL with tailscale serve status." -ForegroundColor Cyan
 } else {
   Write-Host "Remote access:    re-run with -Serve to publish https://<machine>.<tailnet>.ts.net" -ForegroundColor Cyan
 }

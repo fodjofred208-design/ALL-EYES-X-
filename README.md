@@ -8,6 +8,9 @@ ALL EYES X is a cybersecurity command-center and authorized remote administratio
 
 ## New server migration
 
+Tailnet dashboard: https://all-eyes-x-server.bittern-adelie.ts.net/
+(requires the correct MagicDNS name and Tailscale Serve configuration).
+
 For Windows setup, Tailscale 100.70.239.62, client migration and database recovery,
 see [SERVER_MIGRATION.md](SERVER_MIGRATION.md).
 

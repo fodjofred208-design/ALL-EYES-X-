@@ -43,6 +43,12 @@ connectivity alone does not replace application authentication.
 
 ## 3. Start the server and dashboard
 
+The requested Tailscale dashboard address is
+`https://all-eyes-x-server.bittern-adelie.ts.net/`. Confirm that the new
+device owns this MagicDNS name and that Tailscale Serve proxies HTTPS to Caddy
+on 8080; see `CADDY_AUDIT.md`. This is tailnet access, not necessarily public
+internet access. Existing agents retain their configured addresses.
+
 From the project root, open two PowerShell terminals:
 
 ```powershell

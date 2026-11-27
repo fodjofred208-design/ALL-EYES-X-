@@ -97,52 +97,77 @@ inspect the logs and listener ownership. A 401 on a protected API without a
 login cookie is expected. Port readiness and HTTP responses alone do not prove
 the UI, WebSocket lifetime, or agent is functioning.
 
-## Tailscale HTTPS and reusing the old name
+## Tailscale HTTPS: new server name
 
-First inspect `tailscale status` and `tailscale serve status` on the new
-server. The name `meta-f.bittern-adelie.ts.net` belongs to the device identified
-as `meta-f` in that tailnet; changing an IP or Caddy config does not transfer
-it. If the old machine still owns that name, coordinate with the tailnet admin:
-free or rename the old device **only after confirming its identity and recovery
-needs**, then assign the available `meta-f` name to the new device through the
-Tailscale admin console, if permitted. Confirm that the new device resolves to
-`100.70.239.62` and that its actual HTTPS URL is the desired one. Names and
-availability are controlled by Tailscale, and cannot be guaranteed here.
+The requested dashboard URL is **https://all-eyes-x-server.bittern-adelie.ts.net/**.
+This is a tailnet URL, not necessarily a public-internet URL. The Caddyfile
+already proxies `/api/*` and `/socket.io/*` directly to Flask on 5000; all
+other frontend requests go to Vite on 5173. React uses same-origin API and
+Socket.IO paths, so there is no need to hard-code a browser-facing API IP.
 
-Enable MagicDNS and HTTPS certificates for the tailnet in the Tailscale admin
-console if not already enabled. With the stack running, opt in to Serve:
+On the new Windows server, first verify the actual device identity and existing
+Serve configuration:
+
+```powershell
+tailscale status
+tailscale ip -4
+tailscale serve status
+```
+
+The device must actually own the `all-eyes-x-server` MagicDNS name in this
+tailnet. Configure its name and enable MagicDNS and HTTPS certificates in the
+Tailscale admin console if necessary. Caddy cannot assign that name or issue a
+Tailscale Serve certificate by itself. Preserve any existing Serve rules: inspect
+them before intentionally setting the HTTPS proxy. With the stack running:
 
 ```powershell
 tailscale serve --bg --https=443 http://127.0.0.1:8080
 tailscale serve status
 ```
 
-This changes the new device's Serve configuration. Inspect existing Serve
-configuration first; do not reset it blindly. Tailscale may require admin or
-operator permissions and certificate approval. Follow any prompt and use the
-actual URL reported by `tailscale serve status`. Alternatively, the launcher
-can enable Serve with `.\start_all.ps1 -NoClient -Serve` after inspection.
-
-From an authorized tailnet device, after the name is assigned and DNS has
-updated:
+This changes the new device's Serve configuration, and may require operator or
+administrator permission. Alternatively use `.\start_all.ps1 -NoClient -Serve`.
+Confirm that status reports this device's desired hostname and forwards HTTPS to
+8080. Check from an authorized device in the same tailnet:
 
 ```powershell
-curl.exe -i https://meta-f.bittern-adelie.ts.net/
-curl.exe -i https://meta-f.bittern-adelie.ts.net/api/auth/status
-curl.exe -I --http2 https://meta-f.bittern-adelie.ts.net/
+curl.exe -i https://all-eyes-x-server.bittern-adelie.ts.net/
+curl.exe -i https://all-eyes-x-server.bittern-adelie.ts.net/api/auth/status
+curl.exe -i "https://all-eyes-x-server.bittern-adelie.ts.net/socket.io/?EIO=4&transport=polling"
 ```
 
 Do not use `-k`: certificate validation failures matter. Inspect the browser's
-certificate details for the correct hostname and expiry. `curl.exe -V` shows
-whether the local curl supports HTTP/2 or HTTP/3. `--http2` may negotiate a
-fallback; inspect verbose output to confirm the protocol. Test HTTP/3 only if
-both client and Tailscale Serve support it. Verify renewals on the actual device.
+certificate hostname and expiry and test renewal on the actual device. Confirm
+HTTP/2 or HTTP/3 only if the installed client and Tailscale Serve support them.
 
-Use the application in a browser over HTTPS and inspect the network panel for a
-successful `/socket.io/` WebSocket upgrade (101) and reconnect behaviour. Test
-an authorized agent from a different tailnet device by configuring its server
-URL and checking heartbeats. Tailnet ACLs, device approval, firewall rules,
-DNS, HTTPS and certificates must all be verified on the actual machines.
+## Diagnosing Vite WebSocket ECONNABORTED
+
+The Node stack trace is from Vite's Socket.IO WebSocket proxy writing to a
+connection that was aborted. It does **not** identify which peer closed it or
+why. Browser navigation, a server restart, a proxy/network interruption,
+firewall software and backend failure can all terminate a connection. A single
+aborted connection is not proof of a permanent fault, but repeated failures
+need investigation. Do not suppress the log or assume the React dependency
+installation is corrupt.
+
+Use the HTTPS hostname above after checking Serve targets Caddy on 8080: Caddy
+routes `/socket.io/*` **directly** to Flask rather than through Vite. If the
+error persists on that path, confirm the browser's network panel shows the
+failing URL and transport, and compare `logs\vite.err.log`,
+`logs\caddy.err.log`, `logs\flask.err.log`, Tailscale status and the exact
+failure time. `http://127.0.0.1:5173` still uses Vite's proxy by design.
+Do not post credentials, recovery phrases, session cookies or sensitive device
+data with logs.
+
+The client prefers WebSocket, retries on disconnection and now explicitly tries
+polling if the first WebSocket transport fails. Previously listing both
+transports was insufficient because `tryAllTransports` was not enabled. This
+improves availability when WebSocket establishment fails; polling does not
+repair the underlying network or a recurring proxy error. The UI's connection
+state and browser console remain visible for diagnosis. Check a WebSocket 101
+upgrade and reconnection with an authorized browser, then test a remote agent's
+heartbeat. The agent continues to use its configured server URL, currently
+`http://100.70.239.62:5000` by default; it does not need the dashboard URL.
 
 ## Sandbox validation and limits
 
@@ -154,3 +179,11 @@ as did synthetic agent registration and heartbeat through Caddy. No real
 Tailscale daemon, Windows host, remote certificate, live customer agent, browser
 or long-duration connection was available in the sandbox. No claim is made that
 remote access, HTTP/2, HTTP/3 or renewal has already been verified there.
+
+Latest connection checks used the updated Socket.IO client with an isolated
+server: a Vite-proxied WebSocket stayed connected for 30 seconds; forcing the
+WebSocket upgrade to fail switched the client to polling; simulating a transport
+close reconnected; Caddy passed both polling and WebSocket connections. The
+new hostname was tested as a local Host header, not against live Tailscale DNS
+or TLS. Windows-specific ECONNABORTED remains unconfirmed until the user's
+machine and logs can be inspected.
